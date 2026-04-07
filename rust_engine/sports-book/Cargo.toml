@@ -1,0 +1,8 @@
+[package]
+name = "sports-book"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sports-core = { path = "../sports-core" }
+pyo3 = { workspace = true }

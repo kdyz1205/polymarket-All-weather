@@ -1,0 +1,17 @@
+[package]
+name = "sports-cli"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sports_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+sports-core = { path = "../sports-core" }
+sports-book = { path = "../sports-book" }
+sports-state = { path = "../sports-state" }
+sports-exec = { path = "../sports-exec" }
+sports-risk = { path = "../sports-risk" }
+sports-journal = { path = "../sports-journal" }
+pyo3 = { workspace = true }

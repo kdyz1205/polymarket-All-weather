@@ -1,0 +1,10 @@
+[package]
+name = "sports-exec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sports-core = { path = "../sports-core" }
+sports-book = { path = "../sports-book" }
+sports-state = { path = "../sports-state" }
+pyo3 = { workspace = true }
