@@ -168,7 +168,7 @@ _ETYPE_TO_PA = {
 def paper_trade_basketball(game_id: int, seed: int) -> PaperGameResult:
     """Paper trade one basketball game."""
     rng = random.Random(seed)
-    config = BasketballStrategyConfig.fee_aware()
+    config = BasketballStrategyConfig.paper_default()
     gatekeeper = StrategyGatekeeper()
 
     market = se.Market("paper_nba", se.Sport.Basketball, f"g{game_id}", "ml")
@@ -259,7 +259,7 @@ def paper_trade_basketball(game_id: int, seed: int) -> PaperGameResult:
                     side="back", price=snap.best_back_price, size=config.base_stake,
                     edge_bps=edge_bps, net_edge_bps=net_edge,
                     would_have_filled=False, game_sec=float(sec),
-                    sport="basketball", strategy_tag="fee_aware",
+                    sport="basketball", strategy_tag="paper_default",
                 ))
 
         fills = exchange.process_tick(ts_ms, rng.random())
@@ -492,7 +492,7 @@ def paper_trade_baseball(game_id: int, seed: int) -> PaperGameResult:
 def run_paper(sport: str = "basketball", n_games: int = 20,
               base_seed: int = 7777) -> PaperReport:
     """Run paper trading session."""
-    strategy_name = "fee_aware" if sport == "basketball" else "trading_default"
+    strategy_name = "paper_default" if sport == "basketball" else "trading_default"
     report = PaperReport(sport=sport, n_games=n_games, strategy_name=strategy_name)
 
     print(f"\n  Paper trading {sport} — {n_games} games...")

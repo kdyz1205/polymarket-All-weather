@@ -158,6 +158,43 @@ class BasketballStrategyConfig:
             min_net_edge_bps=50.0,
         )
 
+    @classmethod
+    def paper_default(cls) -> BasketballStrategyConfig:
+        """Optimal operating point from 2D fee sweep.
+        fee=80bps, net=20bps → best absolute PnL in sweep grid.
+        Used for paper trading and live candidate evaluation."""
+        return cls(
+            min_edge_bps=50.0,
+            min_liquidity=10.0,
+            max_spread_bps=2000.0,
+            cooldown_sec=5.0,
+            max_position_per_runner=2000.0,
+            max_total_position=5000.0,
+            max_orders_per_min=60,
+            base_stake=30.0,
+            delay_penalty_bps_per_ms=0.05,
+            fee_bps_roundtrip=80.0,
+            min_net_edge_bps=20.0,
+        )
+
+    @classmethod
+    def micro_live(cls) -> BasketballStrategyConfig:
+        """Ultra-conservative config for first real-money exposure.
+        $1 stakes, tight position limits, same fee/net as paper_default."""
+        return cls(
+            min_edge_bps=50.0,
+            min_liquidity=10.0,
+            max_spread_bps=2000.0,
+            cooldown_sec=30.0,
+            max_position_per_runner=3.0,    # max $3 per runner
+            max_total_position=3.0,         # max $3 total exposure
+            max_orders_per_min=5,
+            base_stake=1.0,                 # $1 per trade
+            delay_penalty_bps_per_ms=0.05,
+            fee_bps_roundtrip=80.0,
+            min_net_edge_bps=20.0,
+        )
+
 
 @dataclass
 class BaseballStrategyConfig:

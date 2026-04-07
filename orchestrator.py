@@ -38,6 +38,7 @@ from src.research import (
 )
 from src.research.registry import StrategyRegistry, StrategyEntry
 from src.pricing.engine import BaseballFeatureFlags
+from src.strategy import BasketballStrategyConfig
 
 
 # ─── Step 1: Generate candidate experiments ───
@@ -299,6 +300,23 @@ def generate_nightly_report(
 
 # ─── Main orchestrator ───
 
+def ensure_live_candidate(registry: StrategyRegistry) -> None:
+    """Register basketball_fee80_net20 as a paper candidate if not present."""
+    sid = "basketball_fee80_net20"
+    if registry.get(sid):
+        return
+    cfg = BasketballStrategyConfig.paper_default()
+    entry = StrategyEntry(
+        strategy_id=sid,
+        name="basketball_fee80_net20",
+        sport="basketball",
+        status="paper",
+        params=cfg.to_dict(),
+    )
+    registry.register(entry)
+    print(f"  Registered live candidate: {sid} (status=paper)")
+
+
 def run_nightly() -> None:
     """Full nightly pipeline."""
     start = time.time()
@@ -307,6 +325,7 @@ def run_nightly() -> None:
     print(f"{'='*80}\n")
 
     registry = StrategyRegistry()
+    ensure_live_candidate(registry)
 
     # Step 1: Generate candidates
     print("  Step 1: Generating candidates...")
@@ -371,6 +390,7 @@ def run_nightly() -> None:
 def run_research_only() -> None:
     """Only run candidate generation and evaluation."""
     registry = StrategyRegistry()
+    ensure_live_candidate(registry)
     candidates = generate_candidates()
     print(f"  Generated {len(candidates)} candidates")
 
@@ -388,6 +408,8 @@ def run_research_only() -> None:
 
 def run_paper_only() -> None:
     """Only run paper trading."""
+    registry = StrategyRegistry()
+    ensure_live_candidate(registry)
     from paper_runner import run_paper
     for sport in ["basketball", "baseball"]:
         report = run_paper(sport=sport, n_games=20)
