@@ -360,6 +360,12 @@ def run_nightly_micro() -> None:
     print(f"  Then: review and confirm orders")
 
 
+def run_auto_scan() -> None:
+    """Auto-scan: market sync → data sync → signal scan → queue."""
+    from orchestrator import run_live
+    run_live()
+
+
 def real_trade(slug: str) -> None:
     """Trade a real game using the real signal generator."""
     from real_signal_generator import run_trade_pipeline
@@ -390,7 +396,11 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python execution_cli.py <command> [args]")
         print()
-        print("  REAL TRADING (use these):")
+        print("  AUTO PIPELINE (recommended):")
+        print("  auto                Full auto: sync→price→signal→queue")
+        print("  live                Alias for auto")
+        print()
+        print("  REAL TRADING:")
         print("  real-price <slug>   Price a real NBA game")
         print("  real-trade <slug>   Full pipeline: price→signal→pre-trade→queue")
         print("  add-market          Register a Polymarket market mapping")
@@ -402,13 +412,16 @@ if __name__ == "__main__":
         print("  nightly             Full nightly routine with simulation")
         print()
         print("  Examples:")
+        print("  python execution_cli.py auto")
         print("  python execution_cli.py real-price min-ind")
         print("  python execution_cli.py real-trade nba-min-ind-2026-04-07")
         sys.exit(1)
 
     cmd = sys.argv[1]
 
-    if cmd == "real-price" and len(sys.argv) > 2:
+    if cmd in ("auto", "live"):
+        run_auto_scan()
+    elif cmd == "real-price" and len(sys.argv) > 2:
         real_price(sys.argv[2])
     elif cmd == "real-trade" and len(sys.argv) > 2:
         real_trade(sys.argv[2])

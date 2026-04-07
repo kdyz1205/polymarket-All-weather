@@ -431,6 +431,123 @@ def run_postmortem_only() -> None:
         pm.print_summary()
 
 
+def run_live() -> None:
+    """Live trading pipeline: market sync → data sync → auto-price → queue.
+
+    This is the main daily routine:
+      1. Sync markets from Polymarket (discover today's games)
+      2. Sync team/player data (records, injuries)
+      3. Scan all markets (price, compare, find edge)
+      4. Queue actionable signals for manual confirmation
+      5. Show status
+
+    Run with: python orchestrator.py live
+    """
+    from src.data.market_sync import MarketSyncer
+    from src.data.data_sync import DataSyncer
+    from src.data.auto_signal_runner import AutoSignalRunner
+    from live_observer import show_status, load_state
+
+    start = time.time()
+    print(f"\n{'='*80}")
+    print(f"  ORCHESTRATOR — LIVE MODE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*80}")
+
+    state = load_state()
+    if state.kill_switch:
+        print(f"\n  KILL SWITCH ACTIVE: {state.kill_reason}")
+        print(f"  Aborting live pipeline. Reset kill switch to continue.")
+        return
+
+    # Step 1: Market discovery
+    print(f"\n  [1/5] Syncing markets from Polymarket...")
+    syncer = MarketSyncer()
+    try:
+        markets = syncer.sync_today(sports=["basketball"])
+        stale = syncer.sync_stale()
+        cache = syncer.get_cache()
+        today_markets = cache.get_today()
+        print(f"    Discovered: {len(markets)} markets, refreshed: {len(stale)} stale")
+        print(f"    Active today: {len(today_markets)}")
+        for m in today_markets:
+            print(f"      {m.away_team}@{m.home_team} H={m.home_price:.3f} A={m.away_price:.3f}")
+    except Exception as e:
+        print(f"    Market sync failed: {e}")
+        print(f"    Continuing with cached data...")
+    finally:
+        syncer.close()
+
+    # Step 2: Data sync (teams + injuries)
+    print(f"\n  [2/5] Syncing team/player data...")
+    data_syncer = DataSyncer()
+    try:
+        stats = data_syncer.sync_all()
+        print(f"    Teams updated: {stats['teams']}")
+        print(f"    Players updated: {stats['players']}")
+        print(f"    Markets processed: {stats['markets_processed']}")
+    except Exception as e:
+        print(f"    Data sync failed: {e}")
+        print(f"    Continuing with cached data...")
+    finally:
+        data_syncer.close()
+
+    # Step 3: Scan and price all markets
+    print(f"\n  [3/5] Scanning markets for signals...")
+    runner = AutoSignalRunner()
+    results = runner.scan_and_queue()
+
+    if not results:
+        print(f"    No markets to scan.")
+    else:
+        actionable = sum(1 for r in results if r.actionable)
+        queued = sum(1 for r in results if r.queued)
+        print(f"    Scanned: {len(results)}, Actionable: {actionable}, Queued: {queued}")
+
+        for r in results:
+            icon = ">>>" if r.actionable else "   "
+            q = " [Q]" if r.queued else ""
+            print(f"    {icon} {r.away_team}@{r.home_team}: "
+                  f"fair={r.fair_home_prob:.1%} mkt={r.market_home_price:.1%} "
+                  f"edge={r.best_edge_bps:+.0f}bps net={r.net_edge_bps:+.0f}bps "
+                  f"{r.signal_strength}{q}")
+
+    # Step 4: Review prompt
+    print(f"\n  [4/5] Order review:")
+    print(f"    Run: python live_observer.py review")
+    print(f"    Or:  python execution_cli.py check")
+
+    # Step 5: Status
+    print(f"\n  [5/5] Status:")
+    show_status()
+
+    elapsed = time.time() - start
+    print(f"\n  Live pipeline complete in {elapsed:.1f}s")
+
+
+def run_live_loop(interval_sec: int = 300) -> None:
+    """Run live pipeline in a loop (default: every 5 minutes)."""
+    print(f"  Starting live loop (interval={interval_sec}s)")
+    print(f"  Press Ctrl+C to stop.\n")
+
+    while True:
+        try:
+            run_live()
+        except KeyboardInterrupt:
+            print("\n  Stopped by user.")
+            break
+        except Exception as e:
+            print(f"\n  ERROR in live loop: {e}")
+            import traceback
+            traceback.print_exc()
+
+        print(f"\n  Next run in {interval_sec}s...")
+        try:
+            time.sleep(interval_sec)
+        except KeyboardInterrupt:
+            print("\n  Stopped by user.")
+            break
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "nightly"
 
@@ -445,6 +562,11 @@ if __name__ == "__main__":
     elif mode == "report":
         registry = StrategyRegistry()
         print(generate_nightly_report([], registry))
+    elif mode == "live":
+        run_live()
+    elif mode == "live-loop":
+        interval = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+        run_live_loop(interval_sec=interval)
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: python orchestrator.py [nightly|research|paper|postmortem|report]")
+        print("Usage: python orchestrator.py [nightly|research|paper|postmortem|report|live|live-loop]")
