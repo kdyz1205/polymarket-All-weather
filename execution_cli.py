@@ -392,34 +392,71 @@ def real_price(slug: str) -> None:
         price_from_polymarket(slug)
 
 
+def run_full_auto(dry_run: bool = False) -> None:
+    """Full auto: sync → price → signal → execute on Polymarket CLOB."""
+    from src.execution.auto_executor import run_full_auto as _run
+    _run(dry_run=dry_run)
+
+
+def run_full_auto_loop(interval: int = 300) -> None:
+    """Continuous auto execution loop."""
+    from src.execution.auto_executor import run_loop
+    run_loop(interval_sec=interval, dry_run=False)
+
+
+def portfolio_status() -> None:
+    """Show portfolio and trading status."""
+    from src.execution.auto_executor import AutoExecutor
+    executor = AutoExecutor(dry_run=True)
+    executor.show_status()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python execution_cli.py <command> [args]")
         print()
-        print("  AUTO PIPELINE (recommended):")
-        print("  auto                Full auto: sync→price→signal→queue")
-        print("  live                Alias for auto")
+        print("  FULL AUTO (end-to-end, real orders):")
+        print("  go                  One-shot: sync→price→signal→EXECUTE")
+        print("  go-loop [sec]       Continuous auto (default 300s)")
+        print("  go-dry              Dry run (no real orders)")
+        print("  portfolio           Show portfolio & trade status")
         print()
-        print("  REAL TRADING:")
-        print("  real-price <slug>   Price a real NBA game")
-        print("  real-trade <slug>   Full pipeline: price→signal→pre-trade→queue")
-        print("  add-market          Register a Polymarket market mapping")
+        print("  SEMI-AUTO (queue + review):")
+        print("  auto                Sync→price→signal→queue (no execution)")
+        print("  live                Alias for auto")
         print("  check               Check real prices for queued orders")
         print("  status              Show today's micro-live status")
         print()
-        print("  SIMULATION (paper testing):")
+        print("  REAL TRADING (manual):")
+        print("  real-price <slug>   Price a real NBA game")
+        print("  real-trade <slug>   Full pipeline: price→signal→pre-trade→queue")
+        print("  add-market          Register a Polymarket market mapping")
+        print()
+        print("  SIMULATION:")
         print("  run [n_games]       Simulated paper→signals→prices→review")
         print("  nightly             Full nightly routine with simulation")
         print()
+        print("  Environment:")
+        print("  POLYMARKET_PRIVATE_KEY=0x...  (required for go/go-loop)")
+        print()
         print("  Examples:")
+        print("  POLYMARKET_PRIVATE_KEY=0x... python execution_cli.py go")
+        print("  python execution_cli.py go-dry")
         print("  python execution_cli.py auto")
-        print("  python execution_cli.py real-price min-ind")
-        print("  python execution_cli.py real-trade nba-min-ind-2026-04-07")
         sys.exit(1)
 
     cmd = sys.argv[1]
 
-    if cmd in ("auto", "live"):
+    if cmd == "go":
+        run_full_auto(dry_run=False)
+    elif cmd == "go-dry":
+        run_full_auto(dry_run=True)
+    elif cmd == "go-loop":
+        interval = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+        run_full_auto_loop(interval=interval)
+    elif cmd == "portfolio":
+        portfolio_status()
+    elif cmd in ("auto", "live"):
         run_auto_scan()
     elif cmd == "real-price" and len(sys.argv) > 2:
         real_price(sys.argv[2])

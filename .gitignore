@@ -17,6 +17,7 @@ output/
 registry/
 reports/
 experiments/
+.env
 execution_queue.jsonl
 micro_live_logs/real_signals.jsonl
 data/cache/
