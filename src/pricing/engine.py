@@ -156,10 +156,40 @@ class TimeDecay:
         else:
             run_rate = 0.085  # closer territory, lowest run rate
 
-        # Pitcher fatigue: pitch count > 90 increases run rate
-        if defensive_pitch_count > 90:
-            fatigue_boost = (defensive_pitch_count - 90) * 0.001
-            run_rate += fatigue_boost
+        # --- Pitcher fatigue regime ---
+        # Pitch count affects the *defensive* pitcher's ability to suppress runs.
+        # Higher pitch count → batting team scores more → higher run environment.
+        if defensive_pitch_count < 75:
+            fatigue_mult = 1.00   # fresh / early game
+        elif defensive_pitch_count < 90:
+            fatigue_mult = 1.03   # tiring, velocity dips ~1 mph
+        elif defensive_pitch_count < 105:
+            fatigue_mult = 1.08   # high risk zone, most starters pulled here
+        else:
+            fatigue_mult = 1.14   # extreme fatigue, rare but very exploitable
+
+        # --- Bullpen quality regime ---
+        # Defensive bullpen ERA determines run environment after reliever enters.
+        # Only matters when pitcher has been changed (i.e., in later innings
+        # or when pitch count forced a change). We blend it in proportionally.
+        if defensive_bullpen_era < 3.00:
+            bullpen_mult = 0.93   # elite bullpen (top ~10%)
+        elif defensive_bullpen_era < 3.50:
+            bullpen_mult = 0.96   # above-average bullpen
+        elif defensive_bullpen_era < 4.20:
+            bullpen_mult = 1.00   # league average
+        elif defensive_bullpen_era < 4.80:
+            bullpen_mult = 1.05   # below-average bullpen
+        else:
+            bullpen_mult = 1.10   # poor bullpen (bottom ~10%)
+
+        # Apply fatigue and bullpen regimes to run rate
+        # Fatigue always applies to the current pitcher.
+        # Bullpen quality matters more as the game progresses (relievers
+        # pitch more of the late innings). Weight bullpen effect by inning.
+        bullpen_weight = max(0.0, (inning - 5) / 4.0)  # 0 through inn 5, ramps to 1.0 by inn 9
+        effective_bullpen_mult = 1.0 + (bullpen_mult - 1.0) * bullpen_weight
+        run_rate *= fatigue_mult * effective_bullpen_mult
 
         remaining_outs = total_outs - outs_done
         expected_remaining_runs = remaining_outs * run_rate
