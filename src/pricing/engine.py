@@ -20,6 +20,26 @@ from typing import Sequence
 
 
 # ============================================================
+# Baseball feature flags — clean ablation control
+# ============================================================
+
+
+@dataclass
+class BaseballFeatureFlags:
+    """Toggle individual enhancement layers for ablation experiments.
+
+    When all flags are False, baseball_factor() uses only inning + score
+    (the original baseline model). Each flag enables one layer independently.
+    """
+    enable_base_out_state: bool = True
+    enable_leverage: bool = True
+    enable_walkoff: bool = True
+    enable_fatigue: bool = True
+    enable_bullpen: bool = True
+    enable_blowout_asymmetry: bool = True
+
+
+# ============================================================
 # Layer 1: Pre-match prior
 # ============================================================
 
@@ -128,16 +148,24 @@ class TimeDecay:
         away_score: int,
         prior_p_home: float,
         # Enhanced inputs (Issue 6)
-        runners_on_base: int = 0,      # 0-3 runners currently on
+        runners_on_base: int = 0,
         batting_team_is_home: bool = False,
-        defensive_pitch_count: int = 0,      # current defensive pitcher's pitch count
-        defensive_bullpen_era: float = 4.00,  # defensive team's bullpen ERA
+        defensive_pitch_count: int = 0,
+        defensive_bullpen_era: float = 4.00,
+        # Ablation control
+        flags: BaseballFeatureFlags | None = None,
     ) -> tuple[float, float]:
         """
         Baseball: 9 innings, 54 total outs.
         Enhanced model with leverage index, base-out state, pitcher
         fatigue, walk-off endgame, and close-game asymmetry.
+
+        Each enhancement is gated by BaseballFeatureFlags for clean
+        ablation experiments.
         """
+        if flags is None:
+            flags = BaseballFeatureFlags()  # all enabled by default
+
         # --- Progress ---
         half_innings_done = (inning - 1) * 2 + (0 if is_top else 1)
         outs_done = half_innings_done * 3 + outs
@@ -147,143 +175,120 @@ class TimeDecay:
         diff = home_score - away_score
 
         # --- Expected remaining runs (refined) ---
-        # Average MLB run rate ~0.11 per out, but varies by game phase
-        # Late innings with fresh bullpen arms → lower run environment
         if inning <= 5:
-            run_rate = 0.12  # starters tire, more offence
+            run_rate = 0.12
         elif inning <= 7:
-            run_rate = 0.10  # setup relievers, tighter
+            run_rate = 0.10
         else:
-            run_rate = 0.085  # closer territory, lowest run rate
+            run_rate = 0.085
 
         # --- Pitcher fatigue regime ---
-        # Pitch count affects the *defensive* pitcher's ability to suppress runs.
-        # Higher pitch count → batting team scores more → higher run environment.
-        if defensive_pitch_count < 75:
-            fatigue_mult = 1.00   # fresh / early game
-        elif defensive_pitch_count < 90:
-            fatigue_mult = 1.03   # tiring, velocity dips ~1 mph
-        elif defensive_pitch_count < 105:
-            fatigue_mult = 1.08   # high risk zone, most starters pulled here
-        else:
-            fatigue_mult = 1.14   # extreme fatigue, rare but very exploitable
+        fatigue_mult = 1.0
+        if flags.enable_fatigue:
+            if defensive_pitch_count < 75:
+                fatigue_mult = 1.00
+            elif defensive_pitch_count < 90:
+                fatigue_mult = 1.03
+            elif defensive_pitch_count < 105:
+                fatigue_mult = 1.08
+            else:
+                fatigue_mult = 1.14
 
         # --- Bullpen quality regime ---
-        # Defensive bullpen ERA determines run environment after reliever enters.
-        # Only matters when pitcher has been changed (i.e., in later innings
-        # or when pitch count forced a change). We blend it in proportionally.
-        if defensive_bullpen_era < 3.00:
-            bullpen_mult = 0.93   # elite bullpen (top ~10%)
-        elif defensive_bullpen_era < 3.50:
-            bullpen_mult = 0.96   # above-average bullpen
-        elif defensive_bullpen_era < 4.20:
-            bullpen_mult = 1.00   # league average
-        elif defensive_bullpen_era < 4.80:
-            bullpen_mult = 1.05   # below-average bullpen
-        else:
-            bullpen_mult = 1.10   # poor bullpen (bottom ~10%)
+        bullpen_mult = 1.0
+        if flags.enable_bullpen:
+            if defensive_bullpen_era < 3.00:
+                bullpen_mult = 0.93
+            elif defensive_bullpen_era < 3.50:
+                bullpen_mult = 0.96
+            elif defensive_bullpen_era < 4.20:
+                bullpen_mult = 1.00
+            elif defensive_bullpen_era < 4.80:
+                bullpen_mult = 1.05
+            else:
+                bullpen_mult = 1.10
+            bullpen_weight = max(0.0, (inning - 5) / 4.0)
+            bullpen_mult = 1.0 + (bullpen_mult - 1.0) * bullpen_weight
 
-        # Apply fatigue and bullpen regimes to run rate
-        # Fatigue always applies to the current pitcher.
-        # Bullpen quality matters more as the game progresses (relievers
-        # pitch more of the late innings). Weight bullpen effect by inning.
-        bullpen_weight = max(0.0, (inning - 5) / 4.0)  # 0 through inn 5, ramps to 1.0 by inn 9
-        effective_bullpen_mult = 1.0 + (bullpen_mult - 1.0) * bullpen_weight
-        run_rate *= fatigue_mult * effective_bullpen_mult
+        run_rate *= fatigue_mult * bullpen_mult
 
         remaining_outs = total_outs - outs_done
         expected_remaining_runs = remaining_outs * run_rate
         std_remaining = math.sqrt(max(expected_remaining_runs, 0.1))
 
-        # --- Base-out state: leverage index approximation ---
-        # Runners on base increase run expectancy of the batting team
-        # RE24 simplified: 0 runners = baseline, each runner ≈ +0.3 expected runs
-        base_run_boost = runners_on_base * 0.3
+        # --- Base-out state ---
+        base_run_boost = runners_on_base * 0.3 if flags.enable_base_out_state else 0.0
 
-        # Leverage index: higher in late close games
+        # --- Leverage index ---
         leverage = 1.0
         abs_diff = abs(diff)
-        if inning >= 7:
-            if abs_diff <= 1:
-                leverage = 2.5  # very high leverage
-            elif abs_diff <= 2:
-                leverage = 1.8
-            elif abs_diff <= 3:
-                leverage = 1.3
-        elif inning >= 5:
-            if abs_diff <= 1:
-                leverage = 1.5
-            elif abs_diff <= 2:
-                leverage = 1.2
+        if flags.enable_leverage:
+            if inning >= 7:
+                if abs_diff <= 1:
+                    leverage = 2.5
+                elif abs_diff <= 2:
+                    leverage = 1.8
+                elif abs_diff <= 3:
+                    leverage = 1.3
+            elif inning >= 5:
+                if abs_diff <= 1:
+                    leverage = 1.5
+                elif abs_diff <= 2:
+                    leverage = 1.2
+            if outs == 2 and inning >= 7 and abs_diff <= 2:
+                leverage *= 1.2
 
-        # Outs matter: 2 outs in a close game is maximum leverage
-        if outs == 2 and inning >= 7 and abs_diff <= 2:
-            leverage *= 1.2
-
-        # --- Home bats last advantage ---
+        # --- Home bats last advantage (always on — structural feature) ---
         home_advantage = 0.0
         if diff < 0 and not is_top:
-            # Home is trailing but gets to bat — structural advantage
-            # Gets stronger in late innings (fewer outs left means
-            # each remaining at-bat is worth more)
             if inning >= 9:
-                home_advantage = 0.04  # bottom 9th trailing = big boost
+                home_advantage = 0.04
             elif inning >= 7:
                 home_advantage = 0.03
             else:
                 home_advantage = 0.02
         elif diff < 0 and is_top:
-            # Home trailing while away bats — home still has the last licks
             home_advantage = 0.015
 
-        # --- Walk-off endgame (bottom 9th+, home trailing or tied) ---
+        # --- Walk-off endgame ---
         walkoff_boost = 0.0
-        if inning >= 9 and not is_top:
+        if flags.enable_walkoff and inning >= 9 and not is_top:
             if diff == 0:
-                # Tied in bottom 9th: home only needs one run, away needs to hold
                 walkoff_boost = 0.06
             elif diff == -1:
-                # Home down 1 in bottom 9th: one swing can tie or walk off
                 walkoff_boost = 0.03
-                # Runners amplify walk-off probability
-                walkoff_boost += runners_on_base * 0.01
+                if flags.enable_base_out_state:
+                    walkoff_boost += runners_on_base * 0.01
             elif diff > 0:
-                # Home already winning in bottom 9th: near certainty
-                # (handled by z-score being large, but add small boost)
                 walkoff_boost = 0.02
 
-        # --- Close-game asymmetry ---
-        # In blowouts (>5 run diff), the trailing team's win probability
-        # collapses faster than a linear model would suggest — comebacks
-        # require sustained multi-inning rallies which are multiplicatively unlikely
+        # --- Close-game asymmetry / blowout penalty ---
         blowout_penalty = 0.0
-        if abs_diff >= 5 and remaining_frac < 0.5:
-            blowout_penalty = (abs_diff - 4) * 0.02 * (1.0 - remaining_frac)
+        if flags.enable_blowout_asymmetry:
+            if abs_diff >= 5 and remaining_frac < 0.5:
+                blowout_penalty = (abs_diff - 4) * 0.02 * (1.0 - remaining_frac)
 
         # --- Compute z-score with adjustments ---
-        # Adjust effective differential for base-out state
         if batting_team_is_home:
-            effective_diff = diff + base_run_boost * 0.15  # runners help home
+            effective_diff = diff + base_run_boost * 0.15
         else:
-            effective_diff = diff - base_run_boost * 0.15  # runners help away
+            effective_diff = diff - base_run_boost * 0.15
 
         z = effective_diff / std_remaining if std_remaining > 0.1 else (
             10.0 if diff > 0 else -10.0
         )
 
-        # Score-based probability with leverage-scaled sensitivity
+        # Leverage-scaled sensitivity
         score_based = 1.0 / (1.0 + math.exp(-z * (1.2 + 0.3 * (leverage - 1.0))))
 
         # Apply all adjustments
         score_based += home_advantage + walkoff_boost
         if diff > 0:
-            score_based += blowout_penalty  # helps leading team
+            score_based += blowout_penalty
         elif diff < 0:
-            score_based -= blowout_penalty  # hurts trailing team
+            score_based -= blowout_penalty
 
         # --- Blend prior with score-based ---
-        # Prior matters more early; score-based dominates late
-        # Baseball converges faster than basketball because discrete outs
         score_weight = 1.0 - remaining_frac ** 0.5
         p_home = prior_p_home * (1.0 - score_weight) + score_based * score_weight
         p_home = max(0.001, min(0.999, p_home))
@@ -616,11 +621,13 @@ class PricingEngine:
         home_rating: TeamRating,
         away_rating: TeamRating,
         model_weight: float = 0.6,
+        baseball_flags: BaseballFeatureFlags | None = None,
     ) -> None:
         self.sport = sport
         self.home_rating = home_rating
         self.away_rating = away_rating
         self.model_weight = model_weight
+        self.baseball_flags = baseball_flags or BaseballFeatureFlags()
         self.shock_accumulator = ShockAccumulator()
 
         # Compute prior
@@ -668,6 +675,7 @@ class PricingEngine:
                 batting_team_is_home=batting_team_is_home,
                 defensive_pitch_count=defensive_pitch_count,
                 defensive_bullpen_era=defensive_bullpen_era,
+                flags=self.baseball_flags,
             )
             p_draw = 0.0
         else:
