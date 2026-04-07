@@ -26,6 +26,30 @@ from src.analytics.risk_attribution import RiskAttributionReport
 
 
 @dataclass
+class NoTradeDignostics:
+    """When trades = 0, explains exactly why."""
+
+    total_signals: int = 0
+    total_passed: int = 0
+    pass_rate: float = 0.0
+    rejection_breakdown: dict[str, int] = field(default_factory=dict)
+    binding_constraint: str = ""  # the single most common rejection reason
+    strategy_config: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total_signals": self.total_signals,
+            "total_passed": self.total_passed,
+            "pass_rate": round(self.pass_rate, 4),
+            "binding_constraint": self.binding_constraint,
+            "rejection_breakdown": dict(
+                sorted(self.rejection_breakdown.items(), key=lambda x: -x[1])
+            ),
+            "strategy_config": self.strategy_config,
+        }
+
+
+@dataclass
 class ReplayReport:
     """Complete replay session report combining all analytics."""
 
@@ -33,14 +57,18 @@ class ReplayReport:
     execution: ExecutionMetrics = field(default_factory=ExecutionMetrics)
     events: EventAttribution = field(default_factory=EventAttribution)
     risk: RiskAttributionReport = field(default_factory=RiskAttributionReport)
+    no_trade: NoTradeDignostics | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "session": self.session.to_dict(),
             "execution": self.execution.to_dict(),
             "event_attribution": self.events.to_dict(),
             "risk_attribution": self.risk.to_dict(),
         }
+        if self.no_trade is not None:
+            d["no_trade_diagnostics"] = self.no_trade.to_dict()
+        return d
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
@@ -153,7 +181,38 @@ class ReplayReport:
                     print(f"  {phase:<12} {p['event_count']:>7} {p['total_pnl_impact']:>+12.4f} "
                           f"{p['suspend_count']:>10}")
 
-        # --- Section 8: Per-Runner PnL ---
+        # --- Section 8: No-Trade Diagnostics ---
+        nt = self.no_trade
+        if nt is not None and s.total_fills == 0:
+            print()
+            print("-" * w)
+            print("  NO-TRADE DIAGNOSTICS")
+            print("-" * w)
+            print(f"  {'Strategy signals':<25} {nt.total_signals:>10}")
+            print(f"  {'Passed all gates':<25} {nt.total_passed:>10}")
+            print(f"  {'Pass rate':<25} {nt.pass_rate:>10.2%}")
+            if nt.binding_constraint:
+                print(f"  {'Binding constraint':<25} {nt.binding_constraint}")
+            if nt.rejection_breakdown:
+                print()
+                print(f"  {'Rejection Reason':<35} {'Count':>8} {'%':>7}")
+                total_rej = sum(nt.rejection_breakdown.values())
+                for reason, count in sorted(nt.rejection_breakdown.items(), key=lambda x: -x[1]):
+                    pct = count / total_rej * 100 if total_rej > 0 else 0
+                    print(f"  {reason:<35} {count:>8} {pct:>6.1f}%")
+        elif nt is not None and s.total_fills > 0:
+            # Still show gate pass rate even when we have trades
+            print()
+            print("-" * w)
+            print("  GATE DIAGNOSTICS")
+            print("-" * w)
+            print(f"  {'Strategy signals':<25} {nt.total_signals:>10}")
+            print(f"  {'Passed all gates':<25} {nt.total_passed:>10}")
+            print(f"  {'Pass rate':<25} {nt.pass_rate:>10.2%}")
+            if nt.binding_constraint:
+                print(f"  {'Binding constraint':<25} {nt.binding_constraint}")
+
+        # --- Section 9: Per-Runner PnL ---
         if s.runner_pnls:
             print()
             print("-" * w)

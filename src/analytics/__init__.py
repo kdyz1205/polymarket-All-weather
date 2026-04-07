@@ -33,7 +33,7 @@ from src.analytics.risk_attribution import (
     RiskAttributionReport,
     RiskAttributionAnalyzer,
 )
-from src.analytics.reporting import ReplayReport
+from src.analytics.reporting import ReplayReport, NoTradeDignostics
 
 __all__ = [
     "FillRecord",
@@ -53,4 +53,5 @@ __all__ = [
     "RiskAttributionReport",
     "RiskAttributionAnalyzer",
     "ReplayReport",
+    "NoTradeDignostics",
 ]
