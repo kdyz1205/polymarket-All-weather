@@ -1,0 +1,103 @@
+# ============================================================
+# Polymarket All-Weather: Multi-Market AI Panel Configuration
+# ============================================================
+
+system:
+  mode: "paper"  # paper | live
+  log_level: "INFO"
+  tick_interval_ms: 1000
+  sandbox_enabled: true
+
+# --------------------------------------------------
+# Market definitions — add new markets here to scale
+# --------------------------------------------------
+markets:
+  - id: "polymarket_us_election"
+    type: "polymarket"
+    name: "US Presidential Election 2024"
+    endpoint: "https://clob.polymarket.com"
+    condition_id: "0x..."
+    token_ids: ["yes_token_id", "no_token_id"]
+    enabled: true
+    max_position_usd: 10000
+    factors:
+      - "order_book_imbalance"
+      - "volume_momentum"
+      - "spread_mean_reversion"
+      - "sentiment_score"
+
+  # Template for adding more markets:
+  # - id: "polymarket_example"
+  #   type: "polymarket"
+  #   name: "Example Market"
+  #   endpoint: "https://clob.polymarket.com"
+  #   condition_id: "0x..."
+  #   token_ids: ["yes_id", "no_id"]
+  #   enabled: true
+  #   max_position_usd: 5000
+  #   factors:
+  #     - "order_book_imbalance"
+  #     - "volume_momentum"
+
+# --------------------------------------------------
+# Factor engine settings
+# --------------------------------------------------
+factor_engine:
+  # Minimum IC (Information Coefficient) for a factor to stay active
+  min_ic_threshold: 0.02
+  # Maximum correlation between any two active factors
+  max_factor_correlation: 0.7
+  # Rolling window for IC calculation (in ticks)
+  ic_window: 500
+  # Factor decay detection sensitivity (z-score threshold)
+  decay_z_threshold: -2.0
+  # Sandbox backtest period (hours of historical data)
+  sandbox_backtest_hours: 72
+
+# --------------------------------------------------
+# AI Agent settings
+# --------------------------------------------------
+ai_agent:
+  model: "claude-sonnet-4-6"
+  max_factors_per_generation: 5
+  generation_interval_minutes: 30
+  self_reflection_enabled: true
+  max_sandbox_retries: 3
+  # Operators the AI is allowed to compose
+  allowed_operators:
+    - "ts_mean"
+    - "ts_std"
+    - "ts_rank"
+    - "ts_corr"
+    - "ts_delta"
+    - "ts_decay_linear"
+    - "rank"
+    - "sign"
+    - "log_return"
+    - "order_book_imbalance"
+    - "spread"
+    - "volume_ratio"
+
+# --------------------------------------------------
+# Risk management
+# --------------------------------------------------
+risk:
+  # Global max drawdown before full shutdown
+  max_drawdown_pct: 5.0
+  # Per-market max drawdown
+  per_market_max_drawdown_pct: 3.0
+  # Slippage threshold to trigger execution AI
+  slippage_alert_bps: 50
+  # Circuit breaker: if volatility spikes this many std devs
+  volatility_circuit_breaker_z: 3.0
+  # Regime detection window (ticks)
+  regime_window: 200
+
+# --------------------------------------------------
+# Dashboard
+# --------------------------------------------------
+dashboard:
+  host: "0.0.0.0"
+  port: 8080
+  ws_port: 8081
+  refresh_interval_ms: 500
