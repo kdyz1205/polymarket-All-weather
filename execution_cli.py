@@ -360,20 +360,59 @@ def run_nightly_micro() -> None:
     print(f"  Then: review and confirm orders")
 
 
+def real_trade(slug: str) -> None:
+    """Trade a real game using the real signal generator."""
+    from real_signal_generator import run_trade_pipeline
+    run_trade_pipeline(slug)
+
+
+def real_price(slug: str) -> None:
+    """Price a real game without trading."""
+    if slug == "min-ind" or slug == "nba-min-ind-2026-04-07":
+        from real_signal_generator import price_min_vs_ind, generate_real_signals
+        from src.pricing.real_game_pricer import RealGamePricer
+        game, result = price_min_vs_ind()
+        pricer = RealGamePricer()
+        print(pricer.display_pricing(result))
+        signals = generate_real_signals(game, result)
+        print(f"\n  SIGNALS:")
+        for s in signals:
+            icon = ">>>" if s.actionable else "   "
+            print(f"    {icon} {s.side:>5} ({s.team[:20]:>20}): "
+                  f"edge={s.edge_bps:+.0f}bps  net={s.net_edge_bps:+.0f}bps  "
+                  f"{s.signal_strength}  {'TRADE' if s.actionable else 'skip'}")
+    else:
+        from real_signal_generator import price_from_polymarket
+        price_from_polymarket(slug)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python execution_cli.py [run|check|status|add-market|nightly]")
+        print("Usage: python execution_cli.py <command> [args]")
         print()
-        print("  run [n_games]  Full pipeline: paper→signals→prices→review")
-        print("  check          Check real prices for queued orders")
-        print("  status         Show today's micro-live status")
-        print("  add-market     Register a Polymarket market mapping")
-        print("  nightly        Full nightly routine")
+        print("  REAL TRADING (use these):")
+        print("  real-price <slug>   Price a real NBA game")
+        print("  real-trade <slug>   Full pipeline: price→signal→pre-trade→queue")
+        print("  add-market          Register a Polymarket market mapping")
+        print("  check               Check real prices for queued orders")
+        print("  status              Show today's micro-live status")
+        print()
+        print("  SIMULATION (paper testing):")
+        print("  run [n_games]       Simulated paper→signals→prices→review")
+        print("  nightly             Full nightly routine with simulation")
+        print()
+        print("  Examples:")
+        print("  python execution_cli.py real-price min-ind")
+        print("  python execution_cli.py real-trade nba-min-ind-2026-04-07")
         sys.exit(1)
 
     cmd = sys.argv[1]
 
-    if cmd == "run":
+    if cmd == "real-price" and len(sys.argv) > 2:
+        real_price(sys.argv[2])
+    elif cmd == "real-trade" and len(sys.argv) > 2:
+        real_trade(sys.argv[2])
+    elif cmd == "run":
         n = int(sys.argv[2]) if len(sys.argv) > 2 else 1
         run_full_pipeline(n_games=n)
     elif cmd == "check":
