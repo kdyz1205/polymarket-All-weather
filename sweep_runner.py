@@ -624,6 +624,153 @@ def compare_basketball_fee_aware(edge_range: list[float], seed: int = 123) -> No
     print()
 
 
+@dataclass
+class FeeCell:
+    """One cell in the 2D fee sweep heatmap."""
+    fee_bps: float
+    min_net_bps: float
+    fills: int = 0
+    net_pnl: float = 0.0
+    signals: int = 0
+    passed: int = 0
+    pass_rate: float = 0.0
+    edge_capture_ratio: float = 0.0
+    pnl_per_fill: float = 0.0
+    fee_drag_pct: float = 0.0  # estimated fees / gross edge
+
+
+def sweep_basketball_2d(
+    fee_range: list[float],
+    net_edge_range: list[float],
+    seed: int = 123,
+) -> list[FeeCell]:
+    """2D sweep: fee_bps_roundtrip × min_net_edge_bps.
+
+    Same game path for every cell. Only fee parameters differ.
+    Returns a flat list of FeeCell results (row-major).
+    """
+    cells: list[FeeCell] = []
+
+    for fee_bps in fee_range:
+        for min_net in net_edge_range:
+            def factory(min_edge, _fee=fee_bps, _net=min_net):
+                return BasketballStrategyConfig(
+                    min_edge_bps=min_edge,
+                    min_liquidity=10.0,
+                    max_spread_bps=2000.0,
+                    cooldown_sec=5.0,
+                    max_position_per_runner=2000.0,
+                    max_total_position=5000.0,
+                    max_orders_per_min=60,
+                    base_stake=30.0,
+                    delay_penalty_bps_per_ms=0.05,
+                    fee_bps_roundtrip=_fee,
+                    min_net_edge_bps=_net,
+                )
+
+            # Run at fixed min_edge_bps=50 (the fee gate dominates anyway)
+            results = sweep_basketball([50], seed=seed, config_factory=factory)
+            r = results[0]
+
+            # Estimate fee drag
+            est_fee_total = r.total_fills * (fee_bps / 10000.0) * 30.0  # base_stake=30
+            gross = r.net_pnl + est_fee_total
+            fee_drag = est_fee_total / gross if gross > 0 else 0
+
+            cells.append(FeeCell(
+                fee_bps=fee_bps,
+                min_net_bps=min_net,
+                fills=r.total_fills,
+                net_pnl=r.net_pnl,
+                signals=r.total_signals,
+                passed=r.total_passed,
+                pass_rate=r.pass_rate,
+                edge_capture_ratio=r.edge_capture_ratio,
+                pnl_per_fill=r.net_pnl / r.total_fills if r.total_fills > 0 else 0,
+                fee_drag_pct=fee_drag,
+            ))
+
+    return cells
+
+
+def print_2d_heatmap(cells: list[FeeCell],
+                     fee_range: list[float],
+                     net_edge_range: list[float]) -> None:
+    """Print 2D heatmap tables for PnL, fills, and fee drag."""
+    # Build lookup
+    lookup = {}
+    for c in cells:
+        lookup[(c.fee_bps, c.min_net_bps)] = c
+
+    # PnL heatmap
+    print(f"\n{'='*90}")
+    print(f"  BASKETBALL 2D FEE SWEEP — NET PnL")
+    print(f"  Rows: fee_bps_roundtrip | Cols: min_net_edge_bps")
+    print(f"{'='*90}")
+    header = f"  {'fee/net':>8}"
+    for net in net_edge_range:
+        header += f" {net:>9.0f}"
+    print(header)
+    print(f"  {'─'*(10 + 10*len(net_edge_range))}")
+
+    best_cell = max(cells, key=lambda c: c.net_pnl)
+
+    for fee in fee_range:
+        row = f"  {fee:>8.0f}"
+        for net in net_edge_range:
+            c = lookup.get((fee, net))
+            if c:
+                marker = " *" if c is best_cell else "  "
+                row += f" {c.net_pnl:>+8.2f}{marker[1]}"
+            else:
+                row += f" {'---':>9}"
+        print(row)
+
+    print(f"\n  * = best cell: fee={best_cell.fee_bps:.0f}, net={best_cell.min_net_bps:.0f}, "
+          f"PnL={best_cell.net_pnl:+.2f}, fills={best_cell.fills}")
+
+    # Fills heatmap
+    print(f"\n  FILLS:")
+    header = f"  {'fee/net':>8}"
+    for net in net_edge_range:
+        header += f" {net:>9.0f}"
+    print(header)
+    print(f"  {'─'*(10 + 10*len(net_edge_range))}")
+
+    for fee in fee_range:
+        row = f"  {fee:>8.0f}"
+        for net in net_edge_range:
+            c = lookup.get((fee, net))
+            row += f" {c.fills:>9}" if c else f" {'---':>9}"
+        print(row)
+
+    # PnL per fill
+    print(f"\n  PnL PER FILL:")
+    header = f"  {'fee/net':>8}"
+    for net in net_edge_range:
+        header += f" {net:>9.0f}"
+    print(header)
+    print(f"  {'─'*(10 + 10*len(net_edge_range))}")
+
+    for fee in fee_range:
+        row = f"  {fee:>8.0f}"
+        for net in net_edge_range:
+            c = lookup.get((fee, net))
+            row += f" {c.pnl_per_fill:>+8.3f} " if c and c.fills > 0 else f" {'---':>9}"
+        print(row)
+
+    # Fee sensitivity analysis
+    print(f"\n{'─'*90}")
+    print(f"  FEE SENSITIVITY (at min_net={net_edge_range[len(net_edge_range)//2]:.0f}):")
+    mid_net = net_edge_range[len(net_edge_range) // 2]
+    for fee in fee_range:
+        c = lookup.get((fee, mid_net))
+        if c:
+            print(f"    fee={fee:>5.0f}bps → fills={c.fills:>4}, PnL={c.net_pnl:>+8.2f}, "
+                  f"PnL/fill={c.pnl_per_fill:>+.3f}, fee_drag={c.fee_drag_pct:.1%}")
+    print(f"{'─'*90}\n")
+
+
 if __name__ == "__main__":
     # Sweep from very aggressive (10bps) to conservative (500bps)
     edge_range = [10, 25, 50, 75, 100, 150, 200, 300, 400, 500]
@@ -634,6 +781,13 @@ if __name__ == "__main__":
 
     print("Running basketball fee-aware comparison...")
     compare_basketball_fee_aware(edge_range)
+
+    # 2D fee sweep
+    print("Running basketball 2D fee sweep...")
+    fee_range_2d = [60, 80, 100, 120, 150, 200]
+    net_edge_range_2d = [0, 20, 50, 80, 120, 200]
+    cells = sweep_basketball_2d(fee_range_2d, net_edge_range_2d)
+    print_2d_heatmap(cells, fee_range_2d, net_edge_range_2d)
 
     print("Running baseball sweep...")
     baseball_results = sweep_baseball(edge_range)
