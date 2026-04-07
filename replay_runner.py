@@ -26,6 +26,7 @@ from src.pricing.engine import (
     TeamRating,
     ShockAccumulator,
     BaseballLeverageIndex,
+    BaseballPitchingContext,
 )
 from src.analytics import (
     FillRecord,
@@ -498,6 +499,18 @@ def run_baseball():
     prev_market_probs: dict[str, float] = {}
     runners_on_base = 0
 
+    # Pitching context — tracks pitch count and bullpen state per team
+    pitching_ctx = BaseballPitchingContext(
+        home_bullpen_era=3.80 + random.gauss(0, 0.4),
+        away_bullpen_era=3.80 + random.gauss(0, 0.4),
+    )
+
+    # Map event descriptions to PA outcome keys for pitch count estimation
+    _EVENT_TO_PA = {
+        "K": "strikeout", "BB": "walk", "1B": "single", "2B": "double",
+        "3B": "triple", "HR": "home_run", "DP": "double_play", "out": "out",
+    }
+
     for inning in range(1, 10):  # 9 innings
         for is_top in [True, False]:
             half = "Top" if is_top else "Bot"
@@ -580,11 +593,25 @@ def run_baseball():
                         print(f"  [{inning} {half}] {event_desc} by {batting_team} — "
                               f"{runs} run(s)! Score: {match_state.home_score}-{match_state.away_score}")
 
+                # Record pitch count from PA outcome
+                pa_key = _EVENT_TO_PA.get(event_desc, "default")
+                pitching_ctx.record_plate_appearance(batting_team, pa_key)
+
                 if match_state.outs >= 3:
                     break
 
+                # Auto pitcher change if fatigued
+                defensive_team = "away" if batting_team == "home" else "home"
+                if pitching_ctx.should_change_pitcher(defensive_team, inning):
+                    pitching_ctx.pitcher_change(defensive_team, "reliever")
+                    pricer.shock_accumulator.add_shock(
+                        ShockAccumulator.baseball_pitcher_change(defensive_team, game_sec))
+
                 # Track runners for enhanced model
                 runners_on_base = match_state.runners_on_base()
+
+                # Get defensive pitching state for current at-bat
+                def_pitch_count, def_bullpen_era = pitching_ctx.defensive_state(batting_team)
 
                 # Step 1: raw model probs (enhanced with base-out state)
                 raw = pricer.update(
@@ -594,6 +621,8 @@ def run_baseball():
                     inning=inning, is_top=is_top, outs=match_state.outs,
                     runners_on_base=runners_on_base,
                     batting_team_is_home=(batting_team == "home"),
+                    defensive_pitch_count=def_pitch_count,
+                    defensive_bullpen_era=def_bullpen_era,
                 )
 
                 # Step 2: biased book
@@ -629,6 +658,8 @@ def run_baseball():
                     market_implied=(mkt_p_h, mkt_p_a),
                     runners_on_base=runners_on_base,
                     batting_team_is_home=(batting_team == "home"),
+                    defensive_pitch_count=def_pitch_count,
+                    defensive_bullpen_era=def_bullpen_era,
                 )
 
                 # Update book state tracking

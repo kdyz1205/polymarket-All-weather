@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass
 
 import sports_engine as se
-from src.pricing.engine import PricingEngine, TeamRating, ShockAccumulator, BaseballLeverageIndex
+from src.pricing.engine import PricingEngine, TeamRating, ShockAccumulator, BaseballLeverageIndex, BaseballPitchingContext
 from src.strategy import (
     BasketballStrategyConfig,
     BaseballStrategyConfig,
@@ -319,6 +319,17 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
         game_sec = 0
         delay_ms = 5000
 
+        pitching_ctx = BaseballPitchingContext(
+            home_bullpen_era=3.80 + random.gauss(0, 0.4),
+            away_bullpen_era=3.80 + random.gauss(0, 0.4),
+        )
+
+        _EVENT_TO_PA_SWEEP = {
+            "strikeout": "strikeout", "walk": "walk", "single": "single",
+            "double": "double", "triple": "triple", "home_run": "home_run",
+            "double_play": "double_play", "out": "out",
+        }
+
         for inning in range(1, 10):
             for is_top in [True, False]:
                 event = se.MatchEvent(f"inn_{inning}", game_sec * 1000,
@@ -357,6 +368,17 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                     else:
                         match_state.outs += 1
 
+                    # Map event type to PA outcome for pitch tracking
+                    _etype_to_pa = {
+                        se.MatchEventType.Strikeout: "strikeout",
+                        se.MatchEventType.Walk: "walk",
+                        se.MatchEventType.Single: "single",
+                        se.MatchEventType.Double: "double",
+                        se.MatchEventType.Triple: "triple",
+                        se.MatchEventType.HomeRun: "home_run",
+                        se.MatchEventType.DoublePlay: "double_play",
+                    }
+
                     if event_type:
                         event = se.MatchEvent(f"pa_{game_sec}", ts_ms,
                                               event_type, float(inning), batting_team)
@@ -364,11 +386,22 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                         if event_type == se.MatchEventType.HomeRun:
                             pricer.shock_accumulator.add_shock(
                                 ShockAccumulator.baseball_home_run(batting_team, game_sec))
+                        pa_outcome = _etype_to_pa.get(event_type, "out")
+                    else:
+                        pa_outcome = "out"
+
+                    pitching_ctx.record_plate_appearance(batting_team, pa_outcome)
 
                     if match_state.outs >= 3:
                         break
 
+                    # Auto pitcher change if fatigued
+                    defensive_team = "away" if batting_team == "home" else "home"
+                    if pitching_ctx.should_change_pitcher(defensive_team, inning):
+                        pitching_ctx.pitcher_change(defensive_team, "reliever")
+
                     runners_on_base = match_state.runners_on_base()
+                    def_pitch_count, def_bullpen_era = pitching_ctx.defensive_state(batting_team)
                     raw = pricer.update(
                         elapsed_sec=game_sec,
                         home_score=match_state.home_score,
@@ -376,6 +409,8 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                         inning=inning, is_top=is_top, outs=match_state.outs,
                         runners_on_base=runners_on_base,
                         batting_team_is_home=(batting_team == "home"),
+                        defensive_pitch_count=def_pitch_count,
+                        defensive_bullpen_era=def_bullpen_era,
                     )
 
                     for rid in ["home", "away"]:
@@ -397,6 +432,8 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                         market_implied=(mkt_h, mkt_a),
                         runners_on_base=runners_on_base,
                         batting_team_is_home=(batting_team == "home"),
+                        defensive_pitch_count=def_pitch_count,
+                        defensive_bullpen_era=def_bullpen_era,
                     )
 
                     run_diff = match_state.home_score - match_state.away_score
