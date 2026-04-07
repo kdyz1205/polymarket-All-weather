@@ -130,8 +130,8 @@ class TimeDecay:
         # Enhanced inputs (Issue 6)
         runners_on_base: int = 0,      # 0-3 runners currently on
         batting_team_is_home: bool = False,
-        pitch_count: int = 0,          # starter's pitch count
-        bullpen_era: float = 4.00,     # relievers' ERA
+        defensive_pitch_count: int = 0,      # current defensive pitcher's pitch count
+        defensive_bullpen_era: float = 4.00,  # defensive team's bullpen ERA
     ) -> tuple[float, float]:
         """
         Baseball: 9 innings, 54 total outs.
@@ -157,8 +157,8 @@ class TimeDecay:
             run_rate = 0.085  # closer territory, lowest run rate
 
         # Pitcher fatigue: pitch count > 90 increases run rate
-        if pitch_count > 90:
-            fatigue_boost = (pitch_count - 90) * 0.001
+        if defensive_pitch_count > 90:
+            fatigue_boost = (defensive_pitch_count - 90) * 0.001
             run_rate += fatigue_boost
 
         remaining_outs = total_outs - outs_done
@@ -534,8 +534,8 @@ class PricingEngine:
         # Enhanced baseball state (Issue 6)
         runners_on_base: int = 0,
         batting_team_is_home: bool = False,
-        pitch_count: int = 0,
-        bullpen_era: float = 4.0,
+        defensive_pitch_count: int = 0,
+        defensive_bullpen_era: float = 4.0,
     ) -> dict:
         """
         Recompute fair probabilities given current game state.
@@ -552,8 +552,8 @@ class PricingEngine:
                 inning, is_top, outs, home_score, away_score, self.prior[0],
                 runners_on_base=runners_on_base,
                 batting_team_is_home=batting_team_is_home,
-                pitch_count=pitch_count,
-                bullpen_era=bullpen_era,
+                defensive_pitch_count=defensive_pitch_count,
+                defensive_bullpen_era=defensive_bullpen_era,
             )
             p_draw = 0.0
         else:
