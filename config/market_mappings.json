@@ -1,17 +1,17 @@
 [
   {
-    "internal_id": "nba_example_lal_bos_ml",
+    "internal_id": "nba_min_ind_ml",
     "sport": "basketball",
-    "home_team": "LAL",
-    "away_team": "BOS",
+    "home_team": "IND",
+    "away_team": "MIN",
     "market_type": "moneyline",
     "game_date": "2026-04-07",
-    "condition_id": "REPLACE_WITH_REAL_CONDITION_ID",
-    "yes_token_id": "REPLACE_WITH_YES_TOKEN_ID",
-    "no_token_id": "REPLACE_WITH_NO_TOKEN_ID",
-    "polymarket_slug": "will-lakers-beat-celtics-apr-7",
-    "description": "Will the Lakers beat the Celtics on April 7?",
-    "active": false,
-    "last_verified_ts": ""
+    "condition_id": "0xb16fe5b3db23336a64193f4724af38294775bf17f79bf2d513a3093c77d9933a",
+    "yes_token_id": "102209872571136621994776319275684405848207233446672233571313042167300202637340",
+    "no_token_id": "67001198723470928325024317997267428884145695729404141328875363513742499928133",
+    "polymarket_slug": "nba-min-ind-2026-04-07",
+    "description": "Timberwolves vs. Pacers — April 7, 2026. Outcomes: [Timberwolves, Pacers]. First token=Timberwolves(away), Second token=Pacers(home).",
+    "active": true,
+    "last_verified_ts": "2026-04-07T20:49:00Z"
   }
 ]
