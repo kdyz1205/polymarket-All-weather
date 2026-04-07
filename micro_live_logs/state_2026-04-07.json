@@ -1,0 +1,13 @@
+{
+  "date": "2026-04-07",
+  "total_exposure": 0.0,
+  "daily_pnl": 0.0,
+  "open_positions": {},
+  "active_markets": [
+    "nba_live_0"
+  ],
+  "orders_today": 3,
+  "fills_today": 0,
+  "kill_switch": false,
+  "kill_reason": ""
+}
