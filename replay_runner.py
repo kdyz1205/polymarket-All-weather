@@ -36,20 +36,39 @@ from src.analytics import (
     EventAttributionAnalyzer,
     RiskAttributionAnalyzer,
     ReplayReport,
+    NoTradeDignostics,
+)
+from src.strategy import (
+    BasketballStrategyConfig,
+    BaseballStrategyConfig,
+    StrategyGatekeeper,
 )
 
 
-def generate_book_levels(fair_odds: float, noise: float = 0.03) -> tuple:
-    """Generate simulated back/lay levels around fair price."""
+def generate_book_levels(
+    fair_odds: float,
+    noise: float = 0.03,
+    market_bias: float = 0.0,
+) -> tuple:
+    """Generate simulated back/lay levels around a biased market center.
+
+    market_bias: shift the book center away from model fair. Positive values
+    make the market think the runner is MORE likely (shorter odds) than
+    our model does, creating edge for backing when our model is right.
+    Measured in odds units, e.g. 0.05 means market center = fair - 0.05.
+    """
+    center = fair_odds + market_bias
+    center = max(1.02, center)
+
     back_levels = []
     lay_levels = []
     for i in range(5):
-        bp = fair_odds * (1 - 0.005 * (i + 1)) + random.gauss(0, noise)
+        bp = center * (1 - 0.005 * (i + 1)) + random.gauss(0, noise)
         bp = max(1.01, round(bp, 2))
         bv = random.uniform(50, 500) * (5 - i)
         back_levels.append((bp, bv))
 
-        lp = fair_odds * (1 + 0.005 * (i + 1)) + random.gauss(0, noise)
+        lp = center * (1 + 0.005 * (i + 1)) + random.gauss(0, noise)
         lp = max(1.01, round(lp, 2))
         lv = random.uniform(50, 500) * (5 - i)
         lay_levels.append((lp, lv))
@@ -89,7 +108,10 @@ def run_basketball():
     risk_analyzer = RiskAttributionAnalyzer()
     fill_counter = 0
     order_counter = 0
-    pending_orders: dict[int, dict] = {}  # order_id -> context at submit
+
+    # --- Strategy with gates ---
+    bball_config = BasketballStrategyConfig.aggressive()
+    gatekeeper = StrategyGatekeeper()
 
     # --- Python pricing ---
     home_rating = TeamRating("Lakers", 1620, home_advantage=70)
@@ -105,15 +127,17 @@ def run_basketball():
     start = time.perf_counter_ns()
     total_trades = 0
     prev_fair: dict = {}
+    delay_ms = 0
 
     # Simulate 4 quarters, 12 min each = 2880 seconds
     for sec in range(0, 2880, 5):  # 5-second ticks
-        ts_ms = int(time.time() * 1000)
+        ts_ms = sec * 1000  # simulated game time
 
         # Transition to in-play at tip-off
         if sec == 0:
             se.MarketStateMachine.apply_to_market(market, se.MarketStatus.InPlay)
             exchange = se.MockExchange(3000, 0.4)  # 3s delay in-play
+            delay_ms = 3000
 
         match_state.match_clock_sec = float(sec)
 
@@ -167,19 +191,46 @@ def run_basketball():
             event_happened = f"{team.upper()} turnover"
             event_type_str = "turnover"
 
-        # Update book
-        fair = pricer.update(
+        # Step 1: get raw model probabilities (no market calibration)
+        raw = pricer.update(
             elapsed_sec=sec,
             home_score=match_state.home_score,
             away_score=match_state.away_score,
         )
 
+        # Step 2: generate biased book (market disagrees with model)
         for runner_id in ["home", "away"]:
             odds_key = "fair_odds_home" if runner_id == "home" else "fair_odds_away"
-            fair_odds = fair[odds_key]
-            back_levels, lay_levels = generate_book_levels(fair_odds, noise=0.02)
+            fair_odds = raw[odds_key]
+            if fair_odds < 2.0:
+                bias = fair_odds * 0.04 + random.gauss(0, 0.01)
+            else:
+                bias = -fair_odds * 0.03 + random.gauss(0, 0.01)
+            back_levels, lay_levels = generate_book_levels(fair_odds, noise=0.02, market_bias=bias)
             book.update_runner_back(runner_id, back_levels)
             book.update_runner_lay(runner_id, lay_levels)
+
+        # Step 3: extract market-implied probs from book mid-prices
+        home_snap = book.get_runner_snapshot("home")
+        away_snap = book.get_runner_snapshot("away")
+        if home_snap.best_back_price > 0 and home_snap.best_lay_price > 0:
+            home_mid = (home_snap.best_back_price + home_snap.best_lay_price) / 2
+            market_p_home = 1.0 / home_mid if home_mid > 1.0 else 0.5
+        else:
+            market_p_home = raw["p_home"]
+        if away_snap.best_back_price > 0 and away_snap.best_lay_price > 0:
+            away_mid = (away_snap.best_back_price + away_snap.best_lay_price) / 2
+            market_p_away = 1.0 / away_mid if away_mid > 1.0 else 0.5
+        else:
+            market_p_away = raw["p_away"]
+
+        # Step 4: re-run update with market calibration to get edges
+        fair = pricer.update(
+            elapsed_sec=sec,
+            home_score=match_state.home_score,
+            away_score=match_state.away_score,
+            market_implied=(market_p_home, market_p_away),
+        )
 
         # Record event attribution snapshot
         if event_type_str and pre_fair:
@@ -212,30 +263,31 @@ def run_basketball():
         risk_snap = risk.snapshot()
         session_agg.record_equity_point(ts_ms, risk_snap.worst_case_loss, 0.0)
 
-        # Strategy: back home if edge > 3%
-        if fair["edge_home"] > 0.03 and not risk.is_kill_switch_active():
-            snap = book.get_runner_snapshot("home")
-            if snap.best_back_price > 0 and risk.check_limits("home", se.Side.Back, snap.best_back_price, 50.0):
+        # Strategy: back runner with positive edge, via gatekeeper
+        for rid, edge_key in [("home", "edge_home"), ("away", "edge_away")]:
+            edge_bps = fair[edge_key] * 10000
+            if edge_bps <= 0:
+                continue
+
+            snap = book.get_runner_snapshot(rid)
+            passed = gatekeeper.check_basketball(
+                config=bball_config,
+                runner_id=rid,
+                edge_bps=edge_bps,
+                best_back_price=snap.best_back_price,
+                best_lay_price=snap.best_lay_price,
+                best_back_volume=snap.best_back_size,
+                current_sec=float(sec),
+                delay_ms=delay_ms,
+                risk_allows=risk.check_limits(rid, se.Side.Back, snap.best_back_price, bball_config.base_stake),
+                kill_switch=risk.is_kill_switch_active(),
+                quarter=quarter,
+            )
+            if passed:
                 order_counter += 1
-                exchange.submit_order(market.market_id, "home", se.Side.Back,
-                                      snap.best_back_price, 50.0, "edge_back_home", ts_ms)
-                pending_orders[order_counter] = {
-                    "runner_id": "home", "side": "back", "price": snap.best_back_price,
-                    "size": 50.0, "submit_ts": ts_ms, "fair_at_submit": fair["fair_odds_home"],
-                    "market_at_submit": snap.best_back_price, "strategy": "edge_back_home",
-                }
-                total_trades += 1
-        elif fair["edge_away"] > 0.03 and not risk.is_kill_switch_active():
-            snap = book.get_runner_snapshot("away")
-            if snap.best_back_price > 0 and risk.check_limits("away", se.Side.Back, snap.best_back_price, 50.0):
-                order_counter += 1
-                exchange.submit_order(market.market_id, "away", se.Side.Back,
-                                      snap.best_back_price, 50.0, "edge_back_away", ts_ms)
-                pending_orders[order_counter] = {
-                    "runner_id": "away", "side": "back", "price": snap.best_back_price,
-                    "size": 50.0, "submit_ts": ts_ms, "fair_at_submit": fair["fair_odds_away"],
-                    "market_at_submit": snap.best_back_price, "strategy": "edge_back_away",
-                }
+                exchange.submit_order(market.market_id, rid, se.Side.Back,
+                                      snap.best_back_price, bball_config.base_stake,
+                                      f"edge_back_{rid}", ts_ms)
                 total_trades += 1
 
         # Process exchange
@@ -333,11 +385,21 @@ def run_basketball():
     print(f"  Simulation time: {elapsed_ms:.1f}ms ({2880//5} ticks)")
 
     # --- Compute analytics ---
+    rej = gatekeeper.rejection_log
+    no_trade = NoTradeDignostics(
+        total_signals=rej.total_signals,
+        total_passed=rej.total_passed,
+        pass_rate=rej.pass_rate,
+        rejection_breakdown=dict(rej.counts),
+        binding_constraint=max(rej.counts, key=rej.counts.get) if rej.counts else "",
+        strategy_config=bball_config.to_dict(),
+    )
     report = ReplayReport(
         session=session_agg.compute(total_orders=total_trades),
         execution=exec_analyzer.compute(),
         events=event_analyzer.compute(),
         risk=risk_analyzer.compute(),
+        no_trade=no_trade,
     )
     report.print_terminal()
     report.save_json("output/basketball_replay.json")
@@ -376,6 +438,10 @@ def run_baseball():
     fill_counter = 0
     order_counter = 0
 
+    # --- Strategy with gates ---
+    bb_config = BaseballStrategyConfig.aggressive()
+    gatekeeper = StrategyGatekeeper()
+
     # --- Python pricing ---
     home_rating = TeamRating("Yankees", 1550)
     away_rating = TeamRating("Dodgers", 1600)
@@ -394,7 +460,7 @@ def run_baseball():
     for inning in range(1, 10):  # 9 innings
         for is_top in [True, False]:
             half = "Top" if is_top else "Bot"
-            ts_ms = int(time.time() * 1000)
+            ts_ms = game_sec * 1000
 
             # Start half-inning
             event = se.MatchEvent(f"inn_{inning}_{half}", ts_ms,
@@ -413,7 +479,7 @@ def run_baseball():
             while match_state.outs < 3 and pa_count < 15:
                 pa_count += 1
                 game_sec += random.randint(15, 45)
-                ts_ms = int(time.time() * 1000)
+                ts_ms = game_sec * 1000
 
                 r = random.random()
                 event_type = None
@@ -468,14 +534,45 @@ def run_baseball():
                 if match_state.outs >= 3:
                     break
 
-                # Update pricing
+                # Step 1: raw model probs
+                raw = pricer.update(
+                    elapsed_sec=game_sec,
+                    home_score=match_state.home_score,
+                    away_score=match_state.away_score,
+                    inning=inning, is_top=is_top, outs=match_state.outs,
+                )
+
+                # Step 2: biased book
+                for rid in ["home", "away"]:
+                    odds_key = "fair_odds_home" if rid == "home" else "fair_odds_away"
+                    fo = raw[odds_key]
+                    if fo < 2.0:
+                        bias = fo * 0.04 + random.gauss(0, 0.01)
+                    else:
+                        bias = -fo * 0.03 + random.gauss(0, 0.01)
+                    bl, ll = generate_book_levels(fo, noise=0.03, market_bias=bias)
+                    book.update_runner_back(rid, bl)
+                    book.update_runner_lay(rid, ll)
+
+                # Step 3: market-implied from book
+                hs = book.get_runner_snapshot("home")
+                aws = book.get_runner_snapshot("away")
+                if hs.best_back_price > 0 and hs.best_lay_price > 0:
+                    mkt_p_h = 1.0 / ((hs.best_back_price + hs.best_lay_price) / 2)
+                else:
+                    mkt_p_h = raw["p_home"]
+                if aws.best_back_price > 0 and aws.best_lay_price > 0:
+                    mkt_p_a = 1.0 / ((aws.best_back_price + aws.best_lay_price) / 2)
+                else:
+                    mkt_p_a = raw["p_away"]
+
+                # Step 4: calibrated update with edges
                 fair = pricer.update(
                     elapsed_sec=game_sec,
                     home_score=match_state.home_score,
                     away_score=match_state.away_score,
-                    inning=inning,
-                    is_top=is_top,
-                    outs=match_state.outs,
+                    inning=inning, is_top=is_top, outs=match_state.outs,
+                    market_implied=(mkt_p_h, mkt_p_a),
                 )
 
                 # Record event attribution if score changed
@@ -493,9 +590,9 @@ def run_baseball():
                         fair_p_home_before=prev_fair.get("p_home", 0),
                         fair_p_home_after=fair["p_home"],
                         model_prob_jump=fair["p_home"] - prev_fair.get("p_home", 0),
-                        market_p_home_before=prev_fair.get("p_home", 0) * 0.98,
+                        market_p_home_before=mkt_p_h,
                         market_p_home_after=fair["p_home"] * 0.99,
-                        market_prob_jump=(fair["p_home"] * 0.99) - (prev_fair.get("p_home", 0) * 0.98),
+                        market_prob_jump=(fair["p_home"] * 0.99) - mkt_p_h,
                         model_led_market=True,
                         convergence_direction="to_model",
                         had_position=risk_snap.total_liability > 0,
@@ -503,21 +600,32 @@ def run_baseball():
                     )
                     event_analyzer.record_event(snap)
 
-                for rid in ["home", "away"]:
-                    odds_key = "fair_odds_home" if rid == "home" else "fair_odds_away"
-                    bl, ll = generate_book_levels(fair[odds_key], noise=0.03)
-                    book.update_runner_back(rid, bl)
-                    book.update_runner_lay(rid, ll)
-
-                # Trade if edge
+                # Trade if edge, via gatekeeper
+                run_diff = match_state.home_score - match_state.away_score
                 for rid, edge_key in [("home", "edge_home"), ("away", "edge_away")]:
-                    if fair[edge_key] > 0.04:
-                        snap = book.get_runner_snapshot(rid)
-                        if snap.best_back_price > 0 and risk.check_limits(rid, se.Side.Back, snap.best_back_price, 30.0):
-                            order_counter += 1
-                            exchange.submit_order(market.market_id, rid, se.Side.Back,
-                                                  snap.best_back_price, 30.0, f"edge_{rid}", ts_ms)
-                            total_trades += 1
+                    edge_bps = fair[edge_key] * 10000
+                    if edge_bps <= 0:
+                        continue
+
+                    snap = book.get_runner_snapshot(rid)
+                    passed = gatekeeper.check_baseball(
+                        config=bb_config,
+                        runner_id=rid, edge_bps=edge_bps,
+                        best_back_price=snap.best_back_price,
+                        best_lay_price=snap.best_lay_price,
+                        best_back_volume=snap.best_back_size,
+                        current_sec=float(game_sec), delay_ms=5000,
+                        risk_allows=risk.check_limits(rid, se.Side.Back, snap.best_back_price, bb_config.base_stake),
+                        kill_switch=risk.is_kill_switch_active(),
+                        inning=inning, outs=match_state.outs,
+                        run_diff=run_diff,
+                    )
+                    if passed:
+                        order_counter += 1
+                        exchange.submit_order(market.market_id, rid, se.Side.Back,
+                                              snap.best_back_price, bb_config.base_stake,
+                                              f"edge_{rid}", ts_ms)
+                        total_trades += 1
 
                 fills = exchange.process_tick(ts_ms, random.random())
                 for fill in fills:
@@ -606,11 +714,21 @@ def run_baseball():
     print(f"  Simulation time: {elapsed_ms:.1f}ms")
 
     # --- Compute analytics ---
+    rej = gatekeeper.rejection_log
+    no_trade = NoTradeDignostics(
+        total_signals=rej.total_signals,
+        total_passed=rej.total_passed,
+        pass_rate=rej.pass_rate,
+        rejection_breakdown=dict(rej.counts),
+        binding_constraint=max(rej.counts, key=rej.counts.get) if rej.counts else "",
+        strategy_config=bb_config.to_dict(),
+    )
     report = ReplayReport(
         session=session_agg.compute(total_orders=total_trades),
         execution=exec_analyzer.compute(),
         events=event_analyzer.compute(),
         risk=risk_analyzer.compute(),
+        no_trade=no_trade,
     )
     report.print_terminal()
     report.save_json("output/baseball_replay.json")
