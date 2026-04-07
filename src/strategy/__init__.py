@@ -92,6 +92,10 @@ class BasketballStrategyConfig:
     # Delay penalty: reduce perceived edge by this factor * delay_ms
     delay_penalty_bps_per_ms: float = 0.1  # 0.1 bps per ms of delay
 
+    # Fee-aware execution gate
+    fee_bps_roundtrip: float = 120.0   # estimated round-trip fee in bps (entry + exit)
+    min_net_edge_bps: float = 50.0     # minimum edge AFTER fees + delay to trade
+
     # Quarter-specific
     enable_q1: bool = True
     enable_q2: bool = True
@@ -103,7 +107,8 @@ class BasketballStrategyConfig:
 
     @classmethod
     def aggressive(cls) -> BasketballStrategyConfig:
-        """Low thresholds to maximise trade count for diagnostics."""
+        """Low thresholds to maximise trade count for diagnostics.
+        Fee gate is OFF (fee_bps_roundtrip=0) to see raw signal volume."""
         return cls(
             min_edge_bps=50.0,
             min_liquidity=10.0,
@@ -114,6 +119,8 @@ class BasketballStrategyConfig:
             max_orders_per_min=60,
             base_stake=30.0,
             delay_penalty_bps_per_ms=0.0,
+            fee_bps_roundtrip=0.0,
+            min_net_edge_bps=0.0,
         )
 
     @classmethod
@@ -129,6 +136,26 @@ class BasketballStrategyConfig:
             max_orders_per_min=3,
             base_stake=25.0,
             delay_penalty_bps_per_ms=0.2,
+            fee_bps_roundtrip=120.0,
+            min_net_edge_bps=80.0,
+        )
+
+    @classmethod
+    def fee_aware(cls) -> BasketballStrategyConfig:
+        """Default trading config: only trades when net edge > fees + delay.
+        Promoted from sweep comparison showing higher edge retention."""
+        return cls(
+            min_edge_bps=50.0,
+            min_liquidity=10.0,
+            max_spread_bps=2000.0,
+            cooldown_sec=5.0,
+            max_position_per_runner=2000.0,
+            max_total_position=5000.0,
+            max_orders_per_min=60,
+            base_stake=30.0,
+            delay_penalty_bps_per_ms=0.05,
+            fee_bps_roundtrip=120.0,
+            min_net_edge_bps=50.0,
         )
 
 
@@ -258,9 +285,12 @@ class StrategyGatekeeper:
             self.rejection_log.reject(RejectReason.MARKET_STATE)
             return False
 
-        # Edge after delay penalty
-        adjusted_edge_bps = edge_bps - (config.delay_penalty_bps_per_ms * delay_ms)
-        if adjusted_edge_bps < config.min_edge_bps:
+        # Edge after delay penalty and fees
+        delay_cost_bps = config.delay_penalty_bps_per_ms * delay_ms
+        fee_cost_bps = config.fee_bps_roundtrip
+        net_edge_bps = edge_bps - delay_cost_bps - fee_cost_bps
+
+        if net_edge_bps < config.min_net_edge_bps:
             self.rejection_log.reject(RejectReason.EDGE_TOO_SMALL)
             return False
 

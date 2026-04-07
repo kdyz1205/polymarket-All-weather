@@ -83,24 +83,34 @@ class SweepResult:
     edge_capture_ratio: float
 
 
-def sweep_basketball(edge_bps_range: list[float], seed: int = 123) -> list[SweepResult]:
-    """Run basketball sim at each edge threshold and collect results."""
+def sweep_basketball(edge_bps_range: list[float], seed: int = 123,
+                     config_factory=None) -> list[SweepResult]:
+    """Run basketball sim at each edge threshold and collect results.
+
+    config_factory: optional callable(min_edge) -> BasketballStrategyConfig.
+    If None, uses the legacy aggressive config (no fee gate).
+    """
     results = []
 
     for min_edge in edge_bps_range:
         random.seed(seed)
 
-        config = BasketballStrategyConfig(
-            min_edge_bps=min_edge,
-            min_liquidity=10.0,
-            max_spread_bps=2000.0,
-            cooldown_sec=5.0,
-            max_position_per_runner=2000.0,
-            max_total_position=5000.0,
-            max_orders_per_min=60,
-            base_stake=30.0,
-            delay_penalty_bps_per_ms=0.0,
-        )
+        if config_factory:
+            config = config_factory(min_edge)
+        else:
+            config = BasketballStrategyConfig(
+                min_edge_bps=min_edge,
+                min_liquidity=10.0,
+                max_spread_bps=2000.0,
+                cooldown_sec=5.0,
+                max_position_per_runner=2000.0,
+                max_total_position=5000.0,
+                max_orders_per_min=60,
+                base_stake=30.0,
+                delay_penalty_bps_per_ms=0.0,
+                fee_bps_roundtrip=0.0,
+                min_net_edge_bps=0.0,
+            )
 
         market = se.Market("nba_sweep", se.Sport.Basketball, "game_sweep", "moneyline")
         match_state = se.MatchState("game_sweep", se.Sport.Basketball)
@@ -561,13 +571,69 @@ def print_sweep_table(sport: str, results: list[SweepResult]) -> None:
     print()
 
 
+def compare_basketball_fee_aware(edge_range: list[float], seed: int = 123) -> None:
+    """Run basketball sweep twice: old (no fees) vs fee-aware, print comparison."""
+
+    def fee_aware_factory(min_edge):
+        return BasketballStrategyConfig(
+            min_edge_bps=min_edge,
+            min_liquidity=10.0,
+            max_spread_bps=2000.0,
+            cooldown_sec=5.0,
+            max_position_per_runner=2000.0,
+            max_total_position=5000.0,
+            max_orders_per_min=60,
+            base_stake=30.0,
+            delay_penalty_bps_per_ms=0.05,
+            fee_bps_roundtrip=120.0,
+            min_net_edge_bps=50.0,
+        )
+
+    print("\n  Running basketball sweep: OLD (no fee gate)...")
+    old_results = sweep_basketball(edge_range, seed=seed)
+    print("  Running basketball sweep: FEE-AWARE...")
+    new_results = sweep_basketball(edge_range, seed=seed, config_factory=fee_aware_factory)
+
+    print()
+    print("=" * 105)
+    print("  BASKETBALL FEE-AWARE COMPARISON (same game path)")
+    print("=" * 105)
+    print(f"  {'Edge':>6} │ {'OLD Fills':>9} {'OLD PnL':>10} {'OLD ECR':>8} │ "
+          f"{'NEW Fills':>9} {'NEW PnL':>10} {'NEW ECR':>8} │ {'ΔFills':>7} {'ΔPnL':>10} {'ΔECR':>8}")
+    print("─" * 105)
+
+    for old, new in zip(old_results, new_results):
+        d_fills = new.total_fills - old.total_fills
+        d_pnl = new.net_pnl - old.net_pnl
+        d_ecr = new.edge_capture_ratio - old.edge_capture_ratio
+        print(f"  {old.min_edge_bps:>5.0f}  │ {old.total_fills:>9} {old.net_pnl:>+10.4f} {old.edge_capture_ratio:>7.3f}  │ "
+              f"{new.total_fills:>9} {new.net_pnl:>+10.4f} {new.edge_capture_ratio:>7.3f}  │ "
+              f"{d_fills:>+7} {d_pnl:>+10.4f} {d_ecr:>+7.3f}")
+
+    print("─" * 105)
+
+    # Summary
+    old_total_fills = sum(r.total_fills for r in old_results)
+    new_total_fills = sum(r.total_fills for r in new_results)
+    old_total_pnl = sum(r.net_pnl for r in old_results)
+    new_total_pnl = sum(r.net_pnl for r in new_results)
+    print(f"\n  TOTAL across all thresholds:")
+    print(f"    OLD: {old_total_fills} fills, PnL={old_total_pnl:+.4f}")
+    print(f"    NEW: {new_total_fills} fills, PnL={new_total_pnl:+.4f}")
+    print(f"    Delta: {new_total_fills - old_total_fills:+d} fills, PnL={new_total_pnl - old_total_pnl:+.4f}")
+    print()
+
+
 if __name__ == "__main__":
     # Sweep from very aggressive (10bps) to conservative (500bps)
     edge_range = [10, 25, 50, 75, 100, 150, 200, 300, 400, 500]
 
-    print("Running basketball sweep...")
+    print("Running basketball sweep (old, no fee gate)...")
     bball_results = sweep_basketball(edge_range)
     print_sweep_table("basketball", bball_results)
+
+    print("Running basketball fee-aware comparison...")
+    compare_basketball_fee_aware(edge_range)
 
     print("Running baseball sweep...")
     baseball_results = sweep_baseball(edge_range)

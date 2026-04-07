@@ -113,7 +113,7 @@ def run_basketball():
     order_counter = 0
 
     # --- Strategy with gates ---
-    bball_config = BasketballStrategyConfig.aggressive()
+    bball_config = BasketballStrategyConfig.fee_aware()
     gatekeeper = StrategyGatekeeper()
 
     # --- Python pricing ---
