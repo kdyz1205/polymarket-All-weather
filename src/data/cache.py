@@ -360,6 +360,7 @@ class GameFeatures:
     edge_away_bps: float = 0.0
     net_edge_bps: float = 0.0
     signal_strength: str = "none"
+    confidence: float = 0.0
     # Outcomes (filled after game)
     traded: bool = False
     confirmed: bool = False
