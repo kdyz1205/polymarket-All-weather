@@ -436,6 +436,90 @@ class BaseballLeverageIndex:
         return round(max(0.1, li), 2)
 
 
+# Expected pitches per plate-appearance outcome (MLB averages, approximate)
+_PA_PITCH_ESTIMATES: dict[str, float] = {
+    "strikeout": 4.2,
+    "walk": 5.5,
+    "single": 3.9,
+    "double": 4.0,
+    "triple": 4.1,
+    "home_run": 4.3,
+    "double_play": 3.2,
+    "out": 2.7,         # generic fielded out
+    "hit_by_pitch": 1.5,
+    "sacrifice": 2.5,
+    "default": 3.5,     # fallback
+}
+
+
+@dataclass
+class BaseballPitchingContext:
+    """
+    Tracks pitcher state for both teams across a baseball game.
+
+    Maintained in the Python replay layer (shadow context) rather than
+    the Rust state machine, since we don't have pitch-by-pitch feeds yet.
+    Pitch counts are estimated from plate-appearance event types.
+    """
+
+    home_pitch_count: int = 0
+    away_pitch_count: int = 0
+    home_bullpen_era: float = 4.00
+    away_bullpen_era: float = 4.00
+    home_pitcher_role: str = "starter"   # starter | reliever | closer
+    away_pitcher_role: str = "starter"
+    home_pitcher_changed: bool = False
+    away_pitcher_changed: bool = False
+
+    def record_plate_appearance(self, batting_team: str, outcome: str) -> None:
+        """Add estimated pitches for a plate appearance to the defensive pitcher."""
+        pitches = _PA_PITCH_ESTIMATES.get(outcome, _PA_PITCH_ESTIMATES["default"])
+        if batting_team == "home":
+            # Home batting → away is pitching (defensive)
+            self.away_pitch_count += int(pitches)
+        else:
+            # Away batting → home is pitching
+            self.home_pitch_count += int(pitches)
+
+    def pitcher_change(self, team: str, new_role: str = "reliever",
+                       bullpen_era: float | None = None) -> None:
+        """Record a pitcher change: reset pitch count, update role and bullpen ERA."""
+        if team == "home":
+            self.home_pitch_count = 0
+            self.home_pitcher_role = new_role
+            self.home_pitcher_changed = True
+            if bullpen_era is not None:
+                self.home_bullpen_era = bullpen_era
+        else:
+            self.away_pitch_count = 0
+            self.away_pitcher_role = new_role
+            self.away_pitcher_changed = True
+            if bullpen_era is not None:
+                self.away_bullpen_era = bullpen_era
+
+    def defensive_state(self, batting_team: str) -> tuple[int, float]:
+        """Return (defensive_pitch_count, defensive_bullpen_era) for the current at-bat."""
+        if batting_team == "home":
+            return self.away_pitch_count, self.away_bullpen_era
+        else:
+            return self.home_pitch_count, self.home_bullpen_era
+
+    def should_change_pitcher(self, team: str, inning: int) -> bool:
+        """Heuristic: suggest pitcher change based on pitch count and inning."""
+        if team == "home":
+            pc, role = self.home_pitch_count, self.home_pitcher_role
+        else:
+            pc, role = self.away_pitch_count, self.away_pitcher_role
+
+        if role == "starter" and pc >= 95:
+            return True
+        if role == "starter" and inning >= 7 and pc >= 75:
+            return True
+        if role == "reliever" and pc >= 30:
+            return True
+        return False
+
+
 class MarketCalibration:
     """
     Anchors model output to exchange-implied probabilities.
