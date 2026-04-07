@@ -14,3 +14,6 @@ venv/
 .ruff_cache/
 .mypy_cache/
 output/
+registry/
+reports/
+experiments/
