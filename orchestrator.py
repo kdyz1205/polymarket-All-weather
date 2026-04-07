@@ -139,7 +139,13 @@ def evaluate_candidate(spec: ExperimentSpec) -> ExperimentResult:
             ))
 
         elif spec.sport == "basketball":
-            # Run paper-style games for basketball evaluation
+            # Build config from spec params so each candidate uses its own fee/net
+            bball_config = BasketballStrategyConfig.paper_default()
+            if spec.params:
+                for k, v in spec.params.items():
+                    if hasattr(bball_config, k):
+                        setattr(bball_config, k, v)
+
             pnls = []
             correct = 0
             total = 0
@@ -147,7 +153,7 @@ def evaluate_candidate(spec: ExperimentSpec) -> ExperimentResult:
             total_signals = 0
 
             for i in range(spec.n_games):
-                g = paper_trade_basketball(i, spec.base_seed + i)
+                g = paper_trade_basketball(i, spec.base_seed + i, config=bball_config)
                 pnls.append(g.shadow_pnl)
                 if g.direction_correct:
                     correct += 1

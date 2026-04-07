@@ -165,10 +165,12 @@ _ETYPE_TO_PA = {
 }
 
 
-def paper_trade_basketball(game_id: int, seed: int) -> PaperGameResult:
+def paper_trade_basketball(game_id: int, seed: int,
+                           config: BasketballStrategyConfig | None = None) -> PaperGameResult:
     """Paper trade one basketball game."""
     rng = random.Random(seed)
-    config = BasketballStrategyConfig.paper_default()
+    if config is None:
+        config = BasketballStrategyConfig.paper_default()
     gatekeeper = StrategyGatekeeper()
 
     market = se.Market("paper_nba", se.Sport.Basketball, f"g{game_id}", "ml")
@@ -265,25 +267,31 @@ def paper_trade_basketball(game_id: int, seed: int) -> PaperGameResult:
         fills = exchange.process_tick(ts_ms, rng.random())
         for fill in fills:
             risk.record_fill(fill)
-            fair_key = "fair_odds_home" if fill.runner_id == "home" else "fair_odds_away"
-            pnl = (fair[fair_key] - fill.price) * fill.size
-            game_pnl += pnl
-            # Mark corresponding shadow order as filled
+            # Track fill for settlement-based PnL later
             for so in reversed(shadow_orders):
                 if so.runner_id == fill.runner_id and not so.would_have_filled:
                     so.would_have_filled = True
                     so.fill_price = fill.price
-                    so.pnl_if_filled = pnl
                     break
 
+    # Settlement-based PnL: back winner → win (odds-1)*stake, back loser → lose stake
     home_won = match_state.home_score > match_state.away_score
+    winner = "home" if home_won else "away"
+    for so in shadow_orders:
+        if so.would_have_filled:
+            if so.runner_id == winner:
+                so.pnl_if_filled = (so.fill_price - 1.0) * so.size  # win
+            else:
+                so.pnl_if_filled = -so.size  # lose
+            game_pnl += so.pnl_if_filled
+
     correct = sum(1 for p in predictions if (p > 0.5) == home_won)
     acc = correct / len(predictions) if predictions else 0
 
     return PaperGameResult(
         game_id=game_id, sport="basketball",
         home_score=match_state.home_score, away_score=match_state.away_score,
-        winner="home" if home_won else "away",
+        winner=winner,
         shadow_orders=len(shadow_orders),
         shadow_fills=sum(1 for so in shadow_orders if so.would_have_filled),
         shadow_pnl=game_pnl,
@@ -457,28 +465,34 @@ def paper_trade_baseball(game_id: int, seed: int) -> PaperGameResult:
                 fills = exchange.process_tick(ts_ms, rng.random())
                 for fill in fills:
                     risk.record_fill(fill)
-                    fair_key = "fair_odds_home" if fill.runner_id == "home" else "fair_odds_away"
-                    pnl = (fair[fair_key] - fill.price) * fill.size
-                    game_pnl += pnl
                     for so in reversed(shadow_orders):
                         if so.runner_id == fill.runner_id and not so.would_have_filled:
                             so.would_have_filled = True
                             so.fill_price = fill.price
-                            so.pnl_if_filled = pnl
                             break
 
             match_state.outs = 0
             if inning >= 9 and not is_top and match_state.home_score > match_state.away_score:
                 break
 
+    # Settlement-based PnL
     home_won = match_state.home_score > match_state.away_score
+    winner = "home" if home_won else "away"
+    for so in shadow_orders:
+        if so.would_have_filled:
+            if so.runner_id == winner:
+                so.pnl_if_filled = (so.fill_price - 1.0) * so.size
+            else:
+                so.pnl_if_filled = -so.size
+            game_pnl += so.pnl_if_filled
+
     correct = sum(1 for p in predictions if (p > 0.5) == home_won)
     acc = correct / len(predictions) if predictions else 0
 
     return PaperGameResult(
         game_id=game_id, sport="baseball",
         home_score=match_state.home_score, away_score=match_state.away_score,
-        winner="home" if home_won else "away",
+        winner=winner,
         shadow_orders=len(shadow_orders),
         shadow_fills=sum(1 for so in shadow_orders if so.would_have_filled),
         shadow_pnl=game_pnl,
