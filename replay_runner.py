@@ -27,6 +27,7 @@ from src.pricing.engine import (
     ShockAccumulator,
     BaseballLeverageIndex,
     BaseballPitchingContext,
+    BaseballFeatureFlags,
 )
 from src.analytics import (
     FillRecord,
@@ -483,7 +484,8 @@ def run_baseball():
     # --- Python pricing ---
     home_rating = TeamRating("Yankees", 1550)
     away_rating = TeamRating("Dodgers", 1600)
-    pricer = PricingEngine("baseball", home_rating, away_rating, model_weight=0.6)
+    pricer = PricingEngine("baseball", home_rating, away_rating, model_weight=0.6,
+                           baseball_flags=BaseballFeatureFlags.trading_default())
 
     se.MarketStateMachine.apply_to_market(market, se.MarketStatus.OpenPrematch)
     se.MarketStateMachine.apply_to_market(market, se.MarketStatus.InPlay)

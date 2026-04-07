@@ -97,6 +97,13 @@ ABLATIONS: dict[str, BaseballFeatureFlags] = {
     ),
 }
 
+# Quick 3-config comparison: the decision that matters
+COMPARISON_CONFIGS: dict[str, BaseballFeatureFlags] = {
+    "baseline": ABLATIONS["baseline"],
+    "trading": BaseballFeatureFlags.trading_default(),
+    "full": BaseballFeatureFlags.research_full(),
+}
+
 
 # ─── Result container ───
 
@@ -460,10 +467,16 @@ def merge_results(results: list[AblationResult]) -> AblationResult:
     return merged
 
 
-def run_ablation(n_games: int = 50, base_seed: int = 42) -> list[AblationResult]:
-    """Run full ablation sweep and print comparison + marginal delta tables."""
+def run_ablation(n_games: int = 50, base_seed: int = 42,
+                 mode: str = "full") -> list[AblationResult]:
+    """Run ablation sweep.
+
+    mode='full': 7 staged configs (detailed marginal analysis)
+    mode='compare': 3 configs (baseline / trading_default / research_full)
+    """
+    configs = ABLATIONS if mode == "full" else COMPARISON_CONFIGS
     print(f"\n{'='*90}")
-    print(f"  BASEBALL MODEL ABLATION SWEEP — {n_games} games × {len(ABLATIONS)} configs")
+    print(f"  BASEBALL MODEL ABLATION — {mode.upper()} — {n_games} games × {len(configs)} configs")
     print(f"  Same game path per seed, only feature flags differ")
     print(f"{'='*90}\n")
 
@@ -475,7 +488,7 @@ def run_ablation(n_games: int = 50, base_seed: int = 42) -> list[AblationResult]
 
     all_merged: list[AblationResult] = []
 
-    for config_name, flags in ABLATIONS.items():
+    for config_name, flags in configs.items():
         results = []
         for path, h_off, a_off, book_seed in game_paths:
             r = run_one_game(flags, config_name, path, h_off, a_off, book_seed)
@@ -563,5 +576,6 @@ def export_results(results: list[AblationResult], output_dir: str = "output") ->
 
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 50
-    results = run_ablation(n_games=n)
+    mode = sys.argv[2] if len(sys.argv) > 2 else "compare"
+    results = run_ablation(n_games=n, mode=mode)
     export_results(results)

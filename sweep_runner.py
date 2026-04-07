@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass
 
 import sports_engine as se
-from src.pricing.engine import PricingEngine, TeamRating, ShockAccumulator, BaseballLeverageIndex, BaseballPitchingContext
+from src.pricing.engine import PricingEngine, TeamRating, ShockAccumulator, BaseballLeverageIndex, BaseballPitchingContext, BaseballFeatureFlags
 from src.strategy import (
     BasketballStrategyConfig,
     BaseballStrategyConfig,
@@ -306,7 +306,8 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
 
         home_rating = TeamRating("Yankees", 1550)
         away_rating = TeamRating("Dodgers", 1600)
-        pricer = PricingEngine("baseball", home_rating, away_rating, model_weight=0.6)
+        pricer = PricingEngine("baseball", home_rating, away_rating, model_weight=0.6,
+                               baseball_flags=BaseballFeatureFlags.trading_default())
 
         se.MarketStateMachine.apply_to_market(market, se.MarketStatus.OpenPrematch)
         se.MarketStateMachine.apply_to_market(market, se.MarketStatus.InPlay)

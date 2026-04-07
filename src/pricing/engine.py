@@ -38,6 +38,36 @@ class BaseballFeatureFlags:
     enable_bullpen: bool = True
     enable_blowout_asymmetry: bool = True
 
+    @classmethod
+    def research_full(cls) -> "BaseballFeatureFlags":
+        """All enhancements on. For ablation experiments and future validation."""
+        return cls()
+
+    @classmethod
+    def trading_default(cls) -> "BaseballFeatureFlags":
+        """Promoted from 50-game ablation results.
+
+        Keeps the three layers with demonstrated positive marginal PnL:
+          +leverage:  +11.11/game
+          +blowout:   +60.37/game
+          +base_out:  near-neutral but structurally sound
+
+        Disables layers that showed no marginal lift on simulated data:
+          walkoff:  -1.37/game
+          fatigue:  -0.72/game
+          bullpen:  -0.60/game
+
+        These remain available for re-evaluation with real pitch-level data.
+        """
+        return cls(
+            enable_base_out_state=True,
+            enable_leverage=True,
+            enable_walkoff=False,
+            enable_fatigue=False,
+            enable_bullpen=False,
+            enable_blowout_asymmetry=True,
+        )
+
 
 # ============================================================
 # Layer 1: Pre-match prior
