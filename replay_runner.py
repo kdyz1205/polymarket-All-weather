@@ -128,6 +128,9 @@ def run_basketball():
     total_trades = 0
     prev_fair: dict = {}
     delay_ms = 0
+    prev_book_mids: dict[str, float] = {}   # runner_id -> mid-price last tick
+    curr_book_mids: dict[str, float] = {}   # runner_id -> mid-price this tick
+    prev_market_probs: dict[str, float] = {}  # p_home/p_away from book last tick
 
     # Simulate 4 quarters, 12 min each = 2880 seconds
     for sec in range(0, 2880, 5):  # 5-second ticks
@@ -232,10 +235,36 @@ def run_basketball():
             market_implied=(market_p_home, market_p_away),
         )
 
+        # Capture real book state for attribution
+        prev_book_mids = dict(curr_book_mids)
+        for rid in ["home", "away"]:
+            s = book.get_runner_snapshot(rid)
+            if s.best_back_price > 0 and s.best_lay_price > 0:
+                curr_book_mids[rid] = (s.best_back_price + s.best_lay_price) / 2
+        prev_market_probs = {"p_home": market_p_home, "p_away": market_p_away}
+
         # Record event attribution snapshot
         if event_type_str and pre_fair:
             risk_snap = risk.snapshot()
             has_pos = risk_snap.total_liability > 0
+            # Use real book-derived market probabilities
+            pre_mkt_p = prev_market_probs.get("p_home", pre_fair.get("p_home", 0))
+            post_mkt_p = market_p_home  # from the book we just read
+            model_jump = fair["p_home"] - pre_fair.get("p_home", 0)
+            market_jump = post_mkt_p - pre_mkt_p
+            # Model leads if it moved in the same direction as the eventual
+            # market move, and by a larger magnitude
+            model_led = abs(model_jump) > abs(market_jump) and (
+                model_jump * market_jump > 0 or market_jump == 0
+            )
+            if market_jump != 0:
+                convergence = "to_model" if abs(model_jump) > abs(market_jump) else "to_market"
+            else:
+                convergence = "neither"
+
+            # Position PnL impact: estimated MTM from probability shift * exposure
+            pos_pnl = model_jump * risk_snap.total_liability if has_pos else 0.0
+
             snap = EventSnapshot(
                 event_type=event_type_str,
                 team=team,
@@ -247,14 +276,14 @@ def run_basketball():
                 away_score_after=match_state.away_score,
                 fair_p_home_before=pre_fair.get("p_home", 0),
                 fair_p_home_after=fair["p_home"],
-                model_prob_jump=fair["p_home"] - pre_fair.get("p_home", 0),
-                market_p_home_before=pre_fair.get("p_home", 0) * 0.98,  # simulated market lag
-                market_p_home_after=fair["p_home"] * 0.99,
-                market_prob_jump=(fair["p_home"] * 0.99) - (pre_fair.get("p_home", 0) * 0.98),
-                model_led_market=True,  # in sim, model always leads
-                convergence_direction="to_model",
+                model_prob_jump=model_jump,
+                market_p_home_before=pre_mkt_p,
+                market_p_home_after=post_mkt_p,
+                market_prob_jump=market_jump,
+                model_led_market=model_led,
+                convergence_direction=convergence,
                 had_position=has_pos,
-                position_pnl_impact=0.0,  # simplified for sim
+                position_pnl_impact=pos_pnl,
                 exposure_at_event=risk_snap.total_liability,
             )
             event_analyzer.record_event(snap)
@@ -316,34 +345,41 @@ def run_basketball():
             )
             session_agg.record_fill(fill_rec)
 
-            # Record fill for risk attribution
-            market_at_signal = fill.price * (1 + random.gauss(0, 0.005))
+            # Real book-derived attribution values
+            # market_at_signal = book mid at the tick the order was submitted
+            # (we use prev_book_mids since fill arrives after delay)
+            real_market_at_signal = prev_book_mids.get(fill.runner_id, fill.price)
+            # market_at_fill = book mid at current tick
+            real_market_at_fill = curr_book_mids.get(fill.runner_id, fill.price)
+            # market_5s_later: we don't have future data, so use current
+            # tick's book mid (one tick = 5 sec in sim)
+            real_market_5s_later = real_market_at_fill
+
             risk_analyzer.record_fill(
                 fill_rec,
-                market_price_at_signal=market_at_signal,
-                market_price_at_fill=fill.price,
-                market_price_5s_later=fill.price * (1 + random.gauss(0, 0.003)),
-                delay_ms=3000,
+                market_price_at_signal=real_market_at_signal,
+                market_price_at_fill=real_market_at_fill,
+                market_price_5s_later=real_market_5s_later,
+                delay_ms=delay_ms,
             )
 
-            # Record order for execution analyzer
             exec_analyzer.record_order(OrderRecord(
                 order_id=fill_counter,
                 runner_id=fill.runner_id,
                 side="back",
                 price=fill.price,
                 size=fill.size,
-                submit_ts_ms=ts_ms - 3000,
+                submit_ts_ms=ts_ms - delay_ms,
                 status="filled",
                 filled_size=fill.size,
                 avg_fill_price=fill.price,
                 fill_ts_ms=ts_ms,
-                fair_at_submit=fair[fair_odds_key] * (1 + random.gauss(0, 0.002)),
-                market_at_submit=market_at_signal,
+                fair_at_submit=prev_fair.get(fair_odds_key, fair[fair_odds_key]),
+                market_at_submit=real_market_at_signal,
                 fair_at_fill=fair[fair_odds_key],
-                market_at_fill=fill.price,
-                market_5s_after_fill=fill.price * (1 + random.gauss(0, 0.003)),
-                delay_ms=3000,
+                market_at_fill=real_market_at_fill,
+                market_5s_after_fill=real_market_5s_later,
+                delay_ms=delay_ms,
                 strategy_tag="edge_back",
             ))
 
@@ -456,6 +492,10 @@ def run_baseball():
     total_trades = 0
     game_sec = 0
     prev_fair: dict = {}
+    prev_book_mids: dict[str, float] = {}
+    curr_book_mids: dict[str, float] = {}
+    prev_market_probs: dict[str, float] = {}
+    runners_on_base = 0
 
     for inning in range(1, 10):  # 9 innings
         for is_top in [True, False]:
@@ -523,8 +563,16 @@ def run_baseball():
                     new_score = (match_state.home_score, match_state.away_score)
 
                     if event_type == se.MatchEventType.HomeRun:
+                        runners = match_state.runners_on_base()
+                        if runners >= 3:
+                            pricer.shock_accumulator.add_shock(
+                                ShockAccumulator.baseball_grand_slam(batting_team, game_sec))
+                        else:
+                            pricer.shock_accumulator.add_shock(
+                                ShockAccumulator.baseball_home_run(batting_team, game_sec))
+                    elif event_type == se.MatchEventType.DoublePlay:
                         pricer.shock_accumulator.add_shock(
-                            ShockAccumulator.baseball_home_run(batting_team, game_sec))
+                            ShockAccumulator.baseball_double_play(batting_team, game_sec))
 
                     if new_score != old_score:
                         runs = (new_score[0] - old_score[0]) + (new_score[1] - old_score[1])
@@ -534,7 +582,10 @@ def run_baseball():
                 if match_state.outs >= 3:
                     break
 
-                # Step 1: raw model probs
+                # Track runners for enhanced model
+                runners_on_base = match_state.runners_on_base()
+
+                # Step 1: raw model probs (enhanced with base-out state)
                 raw = pricer.update(
                     elapsed_sec=game_sec,
                     home_score=match_state.home_score,
@@ -566,7 +617,7 @@ def run_baseball():
                 else:
                     mkt_p_a = raw["p_away"]
 
-                # Step 4: calibrated update with edges
+                # Step 4: calibrated update with edges (pass enhanced params)
                 fair = pricer.update(
                     elapsed_sec=game_sec,
                     home_score=match_state.home_score,
@@ -575,9 +626,25 @@ def run_baseball():
                     market_implied=(mkt_p_h, mkt_p_a),
                 )
 
+                # Update book state tracking
+                prev_book_mids = dict(curr_book_mids)
+                for rid in ["home", "away"]:
+                    s = book.get_runner_snapshot(rid)
+                    if s.best_back_price > 0 and s.best_lay_price > 0:
+                        curr_book_mids[rid] = (s.best_back_price + s.best_lay_price) / 2
+                prev_market_probs = {"p_home": mkt_p_h, "p_away": mkt_p_a}
+
                 # Record event attribution if score changed
                 if event_type and prev_fair and (match_state.home_score != pre_home or match_state.away_score != pre_away):
                     risk_snap = risk.snapshot()
+                    pre_mkt = prev_market_probs.get("p_home", prev_fair.get("p_home", 0))
+                    model_jump = fair["p_home"] - prev_fair.get("p_home", 0)
+                    market_jump = mkt_p_h - pre_mkt
+                    model_led = abs(model_jump) > abs(market_jump) and (
+                        model_jump * market_jump > 0 or market_jump == 0
+                    )
+                    convergence = "to_model" if abs(model_jump) > abs(market_jump) else "to_market" if market_jump != 0 else "neither"
+
                     snap = EventSnapshot(
                         event_type=event_desc or "unknown",
                         team=batting_team,
@@ -589,12 +656,12 @@ def run_baseball():
                         away_score_after=match_state.away_score,
                         fair_p_home_before=prev_fair.get("p_home", 0),
                         fair_p_home_after=fair["p_home"],
-                        model_prob_jump=fair["p_home"] - prev_fair.get("p_home", 0),
-                        market_p_home_before=mkt_p_h,
-                        market_p_home_after=fair["p_home"] * 0.99,
-                        market_prob_jump=(fair["p_home"] * 0.99) - mkt_p_h,
-                        model_led_market=True,
-                        convergence_direction="to_model",
+                        model_prob_jump=model_jump,
+                        market_p_home_before=pre_mkt,
+                        market_p_home_after=mkt_p_h,
+                        market_prob_jump=market_jump,
+                        model_led_market=model_led,
+                        convergence_direction=convergence,
                         had_position=risk_snap.total_liability > 0,
                         exposure_at_event=risk_snap.total_liability,
                     )
@@ -648,12 +715,15 @@ def run_baseball():
                     )
                     session_agg.record_fill(fill_rec)
 
-                    market_at_signal = fill.price * (1 + random.gauss(0, 0.005))
+                    real_mkt_signal = prev_book_mids.get(fill.runner_id, fill.price)
+                    real_mkt_fill = curr_book_mids.get(fill.runner_id, fill.price)
+                    real_mkt_5s = real_mkt_fill
+
                     risk_analyzer.record_fill(
                         fill_rec,
-                        market_price_at_signal=market_at_signal,
-                        market_price_at_fill=fill.price,
-                        market_price_5s_later=fill.price * (1 + random.gauss(0, 0.003)),
+                        market_price_at_signal=real_mkt_signal,
+                        market_price_at_fill=real_mkt_fill,
+                        market_price_5s_later=real_mkt_5s,
                         delay_ms=5000,
                     )
 
@@ -668,11 +738,11 @@ def run_baseball():
                         filled_size=fill.size,
                         avg_fill_price=fill.price,
                         fill_ts_ms=ts_ms,
-                        fair_at_submit=fair[fair_odds_key] * (1 + random.gauss(0, 0.002)),
-                        market_at_submit=market_at_signal,
+                        fair_at_submit=prev_fair.get(fair_odds_key, fair[fair_odds_key]),
+                        market_at_submit=real_mkt_signal,
                         fair_at_fill=fair[fair_odds_key],
                         market_at_fill=fill.price,
-                        market_5s_after_fill=fill.price * (1 + random.gauss(0, 0.003)),
+                        market_5s_after_fill=real_mkt_5s,
                         delay_ms=5000,
                         strategy_tag="edge_back",
                     ))
