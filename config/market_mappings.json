@@ -1,0 +1,17 @@
+[
+  {
+    "internal_id": "nba_example_lal_bos_ml",
+    "sport": "basketball",
+    "home_team": "LAL",
+    "away_team": "BOS",
+    "market_type": "moneyline",
+    "game_date": "2026-04-07",
+    "condition_id": "REPLACE_WITH_REAL_CONDITION_ID",
+    "yes_token_id": "REPLACE_WITH_YES_TOKEN_ID",
+    "no_token_id": "REPLACE_WITH_NO_TOKEN_ID",
+    "polymarket_slug": "will-lakers-beat-celtics-apr-7",
+    "description": "Will the Lakers beat the Celtics on April 7?",
+    "active": false,
+    "last_verified_ts": ""
+  }
+]

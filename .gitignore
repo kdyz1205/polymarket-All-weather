@@ -17,3 +17,4 @@ output/
 registry/
 reports/
 experiments/
+execution_queue.jsonl
