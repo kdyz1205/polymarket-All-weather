@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass
 
 import sports_engine as se
-from src.pricing.engine import PricingEngine, TeamRating, ShockAccumulator
+from src.pricing.engine import PricingEngine, TeamRating, ShockAccumulator, BaseballLeverageIndex
 from src.strategy import (
     BasketballStrategyConfig,
     BaseballStrategyConfig,
@@ -368,11 +368,14 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                     if match_state.outs >= 3:
                         break
 
+                    runners_on_base = match_state.runners_on_base()
                     raw = pricer.update(
                         elapsed_sec=game_sec,
                         home_score=match_state.home_score,
                         away_score=match_state.away_score,
                         inning=inning, is_top=is_top, outs=match_state.outs,
+                        runners_on_base=runners_on_base,
+                        batting_team_is_home=(batting_team == "home"),
                     )
 
                     for rid in ["home", "away"]:
@@ -392,9 +395,15 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                         away_score=match_state.away_score,
                         inning=inning, is_top=is_top, outs=match_state.outs,
                         market_implied=(mkt_h, mkt_a),
+                        runners_on_base=runners_on_base,
+                        batting_team_is_home=(batting_team == "home"),
                     )
 
                     run_diff = match_state.home_score - match_state.away_score
+                    leverage_idx = BaseballLeverageIndex.compute(
+                        inning=inning, is_top=is_top, outs=match_state.outs,
+                        run_diff=run_diff, runners_on_base=runners_on_base,
+                    )
 
                     for rid, edge_key in [("home", "edge_home"), ("away", "edge_away")]:
                         edge_bps = fair[edge_key] * 10000
@@ -413,6 +422,7 @@ def sweep_baseball(edge_bps_range: list[float], seed: int = 456) -> list[SweepRe
                             kill_switch=risk.is_kill_switch_active(),
                             inning=inning, outs=match_state.outs,
                             run_diff=run_diff,
+                            leverage_index=leverage_idx,
                         )
 
                         if passed:

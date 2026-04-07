@@ -531,6 +531,11 @@ class PricingEngine:
         inning: int = 1,
         is_top: bool = True,
         outs: int = 0,
+        # Enhanced baseball state (Issue 6)
+        runners_on_base: int = 0,
+        batting_team_is_home: bool = False,
+        pitch_count: int = 0,
+        bullpen_era: float = 4.0,
     ) -> dict:
         """
         Recompute fair probabilities given current game state.
@@ -544,7 +549,11 @@ class PricingEngine:
             p_draw = 0.0
         elif self.sport == "baseball":
             p_home, p_away = TimeDecay.baseball_factor(
-                inning, is_top, outs, home_score, away_score, self.prior[0]
+                inning, is_top, outs, home_score, away_score, self.prior[0],
+                runners_on_base=runners_on_base,
+                batting_team_is_home=batting_team_is_home,
+                pitch_count=pitch_count,
+                bullpen_era=bullpen_era,
             )
             p_draw = 0.0
         else:

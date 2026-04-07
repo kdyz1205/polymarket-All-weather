@@ -25,6 +25,7 @@ from src.pricing.engine import (
     PricingEngine,
     TeamRating,
     ShockAccumulator,
+    BaseballLeverageIndex,
 )
 from src.analytics import (
     FillRecord,
@@ -591,6 +592,8 @@ def run_baseball():
                     home_score=match_state.home_score,
                     away_score=match_state.away_score,
                     inning=inning, is_top=is_top, outs=match_state.outs,
+                    runners_on_base=runners_on_base,
+                    batting_team_is_home=(batting_team == "home"),
                 )
 
                 # Step 2: biased book
@@ -624,6 +627,8 @@ def run_baseball():
                     away_score=match_state.away_score,
                     inning=inning, is_top=is_top, outs=match_state.outs,
                     market_implied=(mkt_p_h, mkt_p_a),
+                    runners_on_base=runners_on_base,
+                    batting_team_is_home=(batting_team == "home"),
                 )
 
                 # Update book state tracking
@@ -669,6 +674,10 @@ def run_baseball():
 
                 # Trade if edge, via gatekeeper
                 run_diff = match_state.home_score - match_state.away_score
+                leverage_idx = BaseballLeverageIndex.compute(
+                    inning=inning, is_top=is_top, outs=match_state.outs,
+                    run_diff=run_diff, runners_on_base=runners_on_base,
+                )
                 for rid, edge_key in [("home", "edge_home"), ("away", "edge_away")]:
                     edge_bps = fair[edge_key] * 10000
                     if edge_bps <= 0:
@@ -686,6 +695,7 @@ def run_baseball():
                         kill_switch=risk.is_kill_switch_active(),
                         inning=inning, outs=match_state.outs,
                         run_diff=run_diff,
+                        leverage_index=leverage_idx,
                     )
                     if passed:
                         order_counter += 1
@@ -762,7 +772,8 @@ def run_baseball():
 
         # Inning summary
         fair = pricer.update(game_sec, match_state.home_score, match_state.away_score,
-                             inning=inning, is_top=True, outs=0)
+                             inning=inning, is_top=True, outs=0,
+                             runners_on_base=0, batting_team_is_home=False)
         prev_fair = fair
         print(f"  --- End {inning}: {match_state.home_score}-{match_state.away_score} "
               f"| P(home)={fair['p_home']:.3f} | trades={total_trades} ---")

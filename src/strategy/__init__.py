@@ -327,6 +327,7 @@ class StrategyGatekeeper:
         inning: int,
         outs: int,
         run_diff: int,
+        leverage_index: float = 1.0,
     ) -> bool:
         """Check all baseball gates. Returns True if order should proceed."""
         self.rejection_log.signal()
@@ -354,10 +355,10 @@ class StrategyGatekeeper:
             self.rejection_log.reject(RejectReason.GAME_NOT_CLOSE)
             return False
 
-        # High leverage adjustment
-        effective_edge = edge_bps
-        if inning in config.high_leverage_innings:
-            effective_edge *= config.high_leverage_multiplier
+        # High leverage adjustment — use real leverage index to scale edge
+        # LI > 1.0 means high leverage: boost effective edge (trade more aggressively)
+        # LI < 1.0 means low leverage: reduce effective edge (trade less)
+        effective_edge = edge_bps * max(0.5, min(leverage_index, config.high_leverage_multiplier))
 
         # Delay penalty
         adjusted_edge_bps = effective_edge - (config.delay_penalty_bps_per_ms * delay_ms)
