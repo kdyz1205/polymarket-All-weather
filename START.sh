@@ -3,7 +3,16 @@ echo "=========================================="
 echo "  Polymarket Auto Trader - Starting"
 echo "=========================================="
 
-export POLYMARKET_PRIVATE_KEY="0xc41ec26f11c9c1ec8fadd73ae990386ab386585dcad1ab89ff0d2a3e41887970"
+# Load from .env if exists
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
+
+if [ -z "$POLYMARKET_PRIVATE_KEY" ]; then
+    echo "ERROR: POLYMARKET_PRIVATE_KEY not set."
+    echo "Create a .env file with: POLYMARKET_PRIVATE_KEY=0x..."
+    exit 1
+fi
 
 # Install deps
 pip install py-clob-client requests python-dotenv -q 2>/dev/null
