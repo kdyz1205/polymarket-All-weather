@@ -1,0 +1,108 @@
+name: Polymarket Auto Trader
+
+on:
+  # Run every 5 minutes
+  schedule:
+    - cron: '*/5 * * * *'
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Trading mode'
+        required: true
+        default: 'scan'
+        type: choice
+        options:
+          - scan        # Just scan for opportunities
+          - dry-run     # Full pipeline, no real orders
+          - trade       # Real trading
+          - mm-dry      # Market maker dry run
+          - mm-live     # Market maker live
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: claude/multi-market-ai-panel-0w3q7
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install py-clob-client requests python-dotenv
+
+      - name: Create data directories
+        run: |
+          mkdir -p data/cache data/trades data/features micro_live_logs
+
+      - name: Download cached state
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/cache/
+            data/trades/
+            data/features/
+          key: trading-state-${{ github.run_number }}
+          restore-keys: |
+            trading-state-
+
+      - name: Run trader
+        env:
+          POLYMARKET_PRIVATE_KEY: ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'scan' }}"
+
+          echo "========================================"
+          echo "  Mode: $MODE"
+          echo "  Time: $(date)"
+          echo "========================================"
+
+          case "$MODE" in
+            scan)
+              python run_auto.py --scan
+              ;;
+            dry-run)
+              python run_auto.py --dry
+              ;;
+            trade)
+              python run_auto.py
+              ;;
+            mm-dry)
+              python market_maker.py --auto --dry --cycles 20
+              ;;
+            mm-live)
+              python market_maker.py --auto --cycles 60
+              ;;
+          esac
+
+      - name: Show portfolio
+        if: always()
+        run: |
+          python -c "
+          import json, os
+          for f in ['data/trades/positions.json', 'data/trades/mm_state.json']:
+              if os.path.exists(f):
+                  print(f'\n=== {f} ===')
+                  with open(f) as fh:
+                      print(json.dumps(json.load(fh), indent=2))
+          " || true
+
+      - name: Upload state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-state-${{ github.run_number }}
+          path: |
+            data/trades/
+            data/cache/
+            micro_live_logs/
+          retention-days: 30
