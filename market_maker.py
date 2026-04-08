@@ -942,6 +942,68 @@ def run_multi_market(n_markets: int = 3, spread: float = 0.02, size: float = 5.0
     print(f"{'=' * 60}\n")
 
 
+def check_wallet() -> None:
+    """Check which wallet the private key corresponds to and its balance."""
+    pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+    if not pk:
+        print("ERROR: POLYMARKET_PRIVATE_KEY not set in .env")
+        return
+
+    print(f"\n{'=' * 60}")
+    print(f"  WALLET CHECK")
+    print(f"{'=' * 60}")
+    print(f"  Private key: {pk[:6]}...{pk[-4:]}")
+
+    try:
+        from py_clob_client.client import ClobClient
+
+        client = ClobClient(host=CLOB_HOST, key=pk, chain_id=CHAIN_ID)
+
+        # Get the wallet address from the private key
+        # The client exposes the address
+        addr = None
+        try:
+            # Try different ways to get the address
+            if hasattr(client, 'get_address'):
+                addr = client.get_address()
+            elif hasattr(client, 'creds') and client.creds:
+                addr = getattr(client.creds, 'api_key', None)
+            # Derive from private key directly
+            if not addr:
+                from eth_account import Account
+                acct = Account.from_key(pk)
+                addr = acct.address
+        except Exception:
+            pass
+
+        if addr:
+            print(f"  Wallet address: {addr}")
+        else:
+            print(f"  Wallet address: (could not derive)")
+
+        # Try to derive API creds to verify connection
+        creds = client.create_or_derive_api_creds()
+        client.set_api_creds(creds)
+        print(f"  API connection: OK")
+        print(f"  API key: {creds.api_key[:20]}...")
+
+        # Try to get balance info via allowances or open orders
+        try:
+            orders = client.get_orders()
+            n_orders = len(orders) if isinstance(orders, list) else 0
+            print(f"  Open orders: {n_orders}")
+        except Exception as e:
+            print(f"  Orders check: {e}")
+
+    except Exception as e:
+        print(f"  ERROR: {e}")
+
+    print(f"\n  IMPORTANT: Make sure this address matches your")
+    print(f"  Polymarket account. Check on Polymarket web →")
+    print(f"  Settings → Wallet to compare addresses.")
+    print(f"{'=' * 60}\n")
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -954,8 +1016,14 @@ if __name__ == "__main__":
     parser.add_argument("--size", type=float, default=5.0, help="Quote size in shares (default 5)")
     parser.add_argument("--cycles", type=int, default=0, help="Max cycles (0=forever)")
     parser.add_argument("--dry", action="store_true", help="Dry run (no real orders)")
+    parser.add_argument("--check", action="store_true", help="Check wallet address and balance")
 
     args = parser.parse_args()
+
+    # Wallet check mode
+    if args.check:
+        check_wallet()
+        sys.exit(0)
 
     # Multi-market mode
     if args.multi > 0:
