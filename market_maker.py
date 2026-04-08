@@ -774,12 +774,182 @@ def find_best_market() -> tuple[str, str] | None:
     return best["token_id"], best["slug"]
 
 
+def find_top_markets(n: int = 5) -> list[dict]:
+    """Find the top N markets for market making — queries Polymarket API.
+
+    Returns list of dicts with token_id, slug, price, volume, liquidity, score.
+    Deduplicates by slug (only keep best outcome per market).
+    """
+    import requests
+
+    GAMMA_API = "https://gamma-api.polymarket.com"
+    logger.info("Fetching top %d markets from Polymarket...", n)
+
+    candidates = []
+
+    try:
+        resp = requests.get(
+            f"{GAMMA_API}/markets",
+            params={
+                "active": "true",
+                "closed": "false",
+                "limit": "100",
+                "order": "volume",
+                "ascending": "false",
+            },
+            timeout=15,
+            headers={"Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        markets = resp.json()
+
+        if not isinstance(markets, list):
+            return []
+
+        for mkt in markets:
+            try:
+                tokens_raw = mkt.get("clobTokenIds", "[]")
+                tokens = json.loads(tokens_raw) if isinstance(tokens_raw, str) else tokens_raw
+
+                prices_raw = mkt.get("outcomePrices", "[]")
+                prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+
+                if not tokens or not prices:
+                    continue
+
+                volume = float(mkt.get("volume", 0) or 0)
+                liquidity = float(mkt.get("liquidity", 0) or 0)
+                slug = mkt.get("slug", "") or mkt.get("question", "")[:50]
+
+                for i, token_id in enumerate(tokens):
+                    if i >= len(prices):
+                        break
+                    price = float(prices[i])
+                    if price < 0.05 or price > 0.95:
+                        continue
+
+                    dist_from_half = abs(price - 0.50)
+                    score = volume * (1.0 - dist_from_half) + liquidity * 0.5
+
+                    candidates.append({
+                        "token_id": token_id,
+                        "slug": slug,
+                        "price": price,
+                        "volume": volume,
+                        "liquidity": liquidity,
+                        "score": score,
+                    })
+            except (ValueError, KeyError, TypeError):
+                continue
+
+    except Exception as e:
+        logger.error("API fetch failed: %s", e)
+        return []
+
+    # Deduplicate: keep only the best outcome per slug
+    best_per_slug: dict[str, dict] = {}
+    for c in candidates:
+        slug = c["slug"]
+        if slug not in best_per_slug or c["score"] > best_per_slug[slug]["score"]:
+            best_per_slug[slug] = c
+
+    ranked = sorted(best_per_slug.values(), key=lambda c: c["score"], reverse=True)
+    return ranked[:n]
+
+
+def run_multi_market(n_markets: int = 3, spread: float = 0.02, size: float = 5.0,
+                     max_cycles: int = 0, dry_run: bool = False) -> None:
+    """Run market maker on multiple markets simultaneously using threads."""
+    import threading
+
+    top = find_top_markets(n=n_markets)
+    if not top:
+        logger.error("No markets found")
+        return
+
+    logger.info("=" * 60)
+    logger.info("  MULTI-MARKET MAKER — %d markets", len(top))
+    logger.info("=" * 60)
+    for i, m in enumerate(top):
+        logger.info("  [%d] %s — price=%.3f vol=$%.0f liq=$%.0f",
+                     i + 1, m["slug"][:45], m["price"], m["volume"], m["liquidity"])
+    logger.info("=" * 60)
+
+    # Split total deployed capital across markets
+    per_market_size = min(size, MAX_TOTAL_DEPLOYED / len(top) / 2)
+
+    threads: list[threading.Thread] = []
+    makers: list[MarketMaker] = []
+
+    for m in top:
+        mm = MarketMaker(
+            token_id=m["token_id"],
+            slug=m["slug"],
+            spread=spread,
+            size=per_market_size,
+            dry_run=dry_run,
+        )
+        makers.append(mm)
+
+        t = threading.Thread(
+            target=mm.run,
+            args=(max_cycles,),
+            name=f"mm-{m['slug'][:20]}",
+            daemon=True,
+        )
+        threads.append(t)
+
+    # Start all threads
+    for t in threads:
+        t.start()
+        time.sleep(0.5)  # stagger starts
+
+    logger.info("All %d market makers running. Press Ctrl+C to stop.", len(threads))
+
+    try:
+        while any(t.is_alive() for t in threads):
+            time.sleep(5)
+            # Print combined status every 30 seconds
+            alive = sum(1 for t in threads if t.is_alive())
+            total_pnl = sum(mm.state.total_pnl for mm in makers)
+            total_fills = sum(mm.state.n_fills for mm in makers)
+            total_trips = sum(mm.state.n_round_trips for mm in makers)
+            logger.info(
+                "MULTI-MM STATUS: %d/%d alive | pnl=$%.4f | fills=%d | trips=%d",
+                alive, len(threads), total_pnl, total_fills, total_trips,
+            )
+    except KeyboardInterrupt:
+        logger.info("Stopping all market makers...")
+        for mm in makers:
+            mm.state.kill_switch = True
+            mm.state.kill_reason = "user stop"
+
+        for t in threads:
+            t.join(timeout=10)
+
+    # Print combined summary
+    print(f"\n{'=' * 60}")
+    print(f"  MULTI-MARKET MAKER FINAL SUMMARY")
+    print(f"{'=' * 60}")
+    total_pnl = 0
+    for mm in makers:
+        total_pnl += mm.state.total_pnl
+        print(f"  {mm.slug[:30]:30s} | pos={mm.state.net_position:+.0f} "
+              f"fills={mm.state.n_fills} trips={mm.state.n_round_trips} "
+              f"pnl=${mm.state.total_pnl:+.4f}")
+    print(f"{'─' * 60}")
+    print(f"  TOTAL PnL: ${total_pnl:+.4f}")
+    print(f"{'=' * 60}\n")
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Polymarket Market Maker")
     parser.add_argument("--token", type=str, help="Token ID to make market on")
     parser.add_argument("--auto", action="store_true", help="Auto-select best market")
+    parser.add_argument("--multi", type=int, default=0,
+                        help="Run on top N markets simultaneously (e.g. --multi 5)")
     parser.add_argument("--spread", type=float, default=0.02, help="Target spread (default 0.02)")
     parser.add_argument("--size", type=float, default=5.0, help="Quote size in shares (default 5)")
     parser.add_argument("--cycles", type=int, default=0, help="Max cycles (0=forever)")
@@ -787,6 +957,18 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Multi-market mode
+    if args.multi > 0:
+        run_multi_market(
+            n_markets=args.multi,
+            spread=args.spread,
+            size=args.size,
+            max_cycles=args.cycles,
+            dry_run=args.dry,
+        )
+        sys.exit(0)
+
+    # Single market mode
     token_id = args.token
     slug = ""
 
