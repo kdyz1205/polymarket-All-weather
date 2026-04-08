@@ -5,17 +5,20 @@ echo ==========================================
 
 REM Load private key from .env file
 if exist .env (
-    for /f "tokens=1,2 delims==" %%a in (.env) do (
-        if "%%a"=="POLYMARKET_PRIVATE_KEY" set POLYMARKET_PRIVATE_KEY=%%b
+    for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+        if "%%A"=="POLYMARKET_PRIVATE_KEY" set POLYMARKET_PRIVATE_KEY=%%B
     )
 )
 
 if "%POLYMARKET_PRIVATE_KEY%"=="" (
-    echo ERROR: POLYMARKET_PRIVATE_KEY not set.
-    echo Create a .env file with: POLYMARKET_PRIVATE_KEY=0x...
+    echo ERROR: POLYMARKET_PRIVATE_KEY not set!
+    echo Create a .env file with:
+    echo   POLYMARKET_PRIVATE_KEY=0xyour_key_here
     pause
     exit /b 1
 )
+
+echo   Wallet loaded successfully.
 
 REM Install dependencies (first time only)
 pip install py-clob-client requests python-dotenv >nul 2>&1

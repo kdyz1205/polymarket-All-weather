@@ -3,16 +3,19 @@ echo "=========================================="
 echo "  Polymarket Auto Trader - Starting"
 echo "=========================================="
 
-# Load from .env if exists
+# Load private key from .env file
 if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
 fi
 
 if [ -z "$POLYMARKET_PRIVATE_KEY" ]; then
-    echo "ERROR: POLYMARKET_PRIVATE_KEY not set."
-    echo "Create a .env file with: POLYMARKET_PRIVATE_KEY=0x..."
+    echo "ERROR: POLYMARKET_PRIVATE_KEY not set!"
+    echo "Create a .env file with:"
+    echo "  POLYMARKET_PRIVATE_KEY=0xyour_key_here"
     exit 1
 fi
+
+echo "  Wallet loaded: ${POLYMARKET_PRIVATE_KEY:0:6}...${POLYMARKET_PRIVATE_KEY: -4}"
 
 # Install deps
 pip install py-clob-client requests python-dotenv -q 2>/dev/null
