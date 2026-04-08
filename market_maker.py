@@ -669,45 +669,109 @@ class MarketMaker:
 
 
 def find_best_market() -> tuple[str, str] | None:
-    """Find the best market to make from cache (highest volume + spread).
-    Auto-syncs from Polymarket API if cache is empty.
+    """Find the best market to make on — queries Polymarket API directly.
+
+    Picks the most liquid active market with price closest to 0.50
+    (tightest spreads, most fill opportunities).
     """
-    from src.data.cache import MarketCache
-    cache = MarketCache()
-    today = cache.get_today()
+    import requests
 
-    if not today:
-        logger.info("Cache empty — syncing markets from Polymarket API...")
-        try:
-            from src.data.market_sync import MarketSyncer
-            syncer = MarketSyncer()
-            syncer.sync_today(sports=["basketball"])
-            syncer.close()
-            # Reload cache
-            cache = MarketCache()
-            today = cache.get_today()
-        except Exception as e:
-            logger.error("Market sync failed: %s", e)
+    GAMMA_API = "https://gamma-api.polymarket.com"
+    logger.info("Fetching all active markets from Polymarket...")
 
-    if not today:
-        logger.error("No active markets found")
+    candidates = []
+
+    try:
+        resp = requests.get(
+            f"{GAMMA_API}/markets",
+            params={
+                "active": "true",
+                "closed": "false",
+                "limit": "100",
+                "order": "volume",
+                "ascending": "false",
+            },
+            timeout=15,
+            headers={"Accept": "application/json"},
+        )
+        resp.raise_for_status()
+        markets = resp.json()
+
+        if not isinstance(markets, list):
+            logger.error("Unexpected API response")
+            return None
+
+        for mkt in markets:
+            try:
+                tokens_raw = mkt.get("clobTokenIds", "[]")
+                if isinstance(tokens_raw, str):
+                    import json as _json
+                    tokens = _json.loads(tokens_raw)
+                else:
+                    tokens = tokens_raw
+
+                prices_raw = mkt.get("outcomePrices", "[]")
+                if isinstance(prices_raw, str):
+                    import json as _json
+                    prices = _json.loads(prices_raw)
+                else:
+                    prices = prices_raw
+
+                if not tokens or not prices:
+                    continue
+
+                volume = float(mkt.get("volume", 0) or 0)
+                liquidity = float(mkt.get("liquidity", 0) or 0)
+                slug = mkt.get("slug", "") or mkt.get("question", "")[:50]
+
+                # For each outcome in this market
+                for i, token_id in enumerate(tokens):
+                    if i >= len(prices):
+                        break
+                    price = float(prices[i])
+
+                    # Best for MM: price near 0.50, high volume, high liquidity
+                    if price < 0.05 or price > 0.95:
+                        continue  # skip extreme prices
+
+                    # Score: prefer prices near 0.50, high volume
+                    dist_from_half = abs(price - 0.50)
+                    score = volume * (1.0 - dist_from_half) + liquidity * 0.5
+
+                    candidates.append({
+                        "token_id": token_id,
+                        "slug": slug,
+                        "price": price,
+                        "volume": volume,
+                        "liquidity": liquidity,
+                        "score": score,
+                    })
+
+            except (ValueError, KeyError, TypeError):
+                continue
+
+    except Exception as e:
+        logger.error("API fetch failed: %s", e)
         return None
 
-    # Pick the market with highest volume
-    best = max(today, key=lambda m: m.volume)
+    if not candidates:
+        logger.error("No tradeable markets found")
+        return None
 
-    # Use the side closest to 0.50 (most liquid, best for MM)
-    home_dist = abs(best.home_price - 0.50)
-    away_dist = abs(best.away_price - 0.50)
+    # Sort by score, pick the best
+    candidates.sort(key=lambda c: c["score"], reverse=True)
 
-    if home_dist < away_dist:
-        token_id = best.home_token_id
-    else:
-        token_id = best.away_token_id
+    # Show top 5 candidates
+    logger.info("Top markets for market making:")
+    for c in candidates[:5]:
+        logger.info("  %s — price=%.3f vol=$%.0f liq=$%.0f score=%.0f",
+                     c["slug"][:40], c["price"], c["volume"],
+                     c["liquidity"], c["score"])
 
-    logger.info("Selected market: %s (%s@%s, vol=$%.0f)",
-                best.slug, best.away_team, best.home_team, best.volume)
-    return token_id, best.slug
+    best = candidates[0]
+    logger.info("SELECTED: %s (price=%.3f, vol=$%.0f)",
+                best["slug"][:50], best["price"], best["volume"])
+    return best["token_id"], best["slug"]
 
 
 if __name__ == "__main__":
