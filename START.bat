@@ -3,8 +3,19 @@ echo ==========================================
 echo   Polymarket Auto Trader - Starting
 echo ==========================================
 
-REM Set your private key
-set POLYMARKET_PRIVATE_KEY=0xc41ec26f11c9c1ec8fadd73ae990386ab386585dcad1ab89ff0d2a3e41887970
+REM Load private key from .env file
+if exist .env (
+    for /f "tokens=1,2 delims==" %%a in (.env) do (
+        if "%%a"=="POLYMARKET_PRIVATE_KEY" set POLYMARKET_PRIVATE_KEY=%%b
+    )
+)
+
+if "%POLYMARKET_PRIVATE_KEY%"=="" (
+    echo ERROR: POLYMARKET_PRIVATE_KEY not set.
+    echo Create a .env file with: POLYMARKET_PRIVATE_KEY=0x...
+    pause
+    exit /b 1
+)
 
 REM Install dependencies (first time only)
 pip install py-clob-client requests python-dotenv >nul 2>&1
