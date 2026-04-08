@@ -669,13 +669,28 @@ class MarketMaker:
 
 
 def find_best_market() -> tuple[str, str] | None:
-    """Find the best market to make from cache (highest volume + spread)."""
+    """Find the best market to make from cache (highest volume + spread).
+    Auto-syncs from Polymarket API if cache is empty.
+    """
     from src.data.cache import MarketCache
     cache = MarketCache()
     today = cache.get_today()
 
     if not today:
-        logger.error("No active markets in cache")
+        logger.info("Cache empty — syncing markets from Polymarket API...")
+        try:
+            from src.data.market_sync import MarketSyncer
+            syncer = MarketSyncer()
+            syncer.sync_today(sports=["basketball"])
+            syncer.close()
+            # Reload cache
+            cache = MarketCache()
+            today = cache.get_today()
+        except Exception as e:
+            logger.error("Market sync failed: %s", e)
+
+    if not today:
+        logger.error("No active markets found")
         return None
 
     # Pick the market with highest volume
