@@ -1,4 +1,4 @@
-"""Check Polymarket wallet balance and set allowance for trading."""
+"""Check Polymarket wallet balance and allowance."""
 import os
 import sys
 
@@ -31,46 +31,56 @@ try:
 except Exception:
     pass
 
-print(f"API key: {creds.api_key[:20]}...")
+# List all useful client methods
+print("\n--- Available balance/allowance methods ---")
+methods = [m for m in dir(client) if 'balance' in m.lower() or 'allow' in m.lower()
+           or 'approve' in m.lower() or 'deposit' in m.lower() or 'collateral' in m.lower()]
+for m in methods:
+    print(f"  {m}")
 
-# Check balance and allowance
-print("\n--- Balance & Allowance ---")
+# Try get_balance_allowance with different calling conventions
+print("\n--- Balance Check ---")
 try:
-    # Try different asset types
-    for asset_type in ["USDC", "COLLATERAL"]:
-        try:
-            ba = client.get_balance_allowance(asset_type=asset_type)
-            print(f"  {asset_type}: balance={ba.get('balance', '?')} allowance={ba.get('allowance', '?')}")
-        except Exception as e:
-            print(f"  {asset_type}: {e}")
+    ba = client.get_balance_allowance()
+    print(f"  get_balance_allowance(): {ba}")
+except Exception as e:
+    print(f"  get_balance_allowance(): {e}")
+
+# Try with a token_id
+test_token = "16040015440196279900485035793550429453516625694844857319147506590755961451627"
+try:
+    ba = client.get_balance_allowance(test_token)
+    print(f"  get_balance_allowance(token): {ba}")
+except Exception as e:
+    print(f"  get_balance_allowance(token): {e}")
+
+# Check proxy wallet info
+print("\n--- Proxy Wallet ---")
+try:
+    proxy = client.create_or_derive_api_creds()
+    print(f"  API key: {proxy.api_key[:20]}...")
+    print(f"  API secret: {proxy.api_secret[:10]}...")
+    print(f"  API passphrase: {proxy.api_passphrase[:10]}...")
 except Exception as e:
     print(f"  Error: {e}")
 
-# Try to set max allowance
-print("\n--- Setting Allowance ---")
-try:
-    resp = client.set_allowance()
-    print(f"  set_allowance() response: {resp}")
-except Exception as e:
-    print(f"  set_allowance() error: {e}")
-
-# Try update_balance_allowance
-try:
-    resp = client.update_balance_allowance()
-    print(f"  update_balance_allowance() response: {resp}")
-except Exception as e:
-    print(f"  update_balance_allowance() error: {e}")
-
-# Check again
-print("\n--- After Allowance ---")
-try:
-    for asset_type in ["USDC", "COLLATERAL"]:
+# Check if there's a proxy address method
+print("\n--- Other useful attributes ---")
+for attr in dir(client):
+    if any(x in attr.lower() for x in ['addr', 'proxy', 'wallet', 'signer', 'account']):
         try:
-            ba = client.get_balance_allowance(asset_type=asset_type)
-            print(f"  {asset_type}: balance={ba.get('balance', '?')} allowance={ba.get('allowance', '?')}")
-        except Exception as e:
-            print(f"  {asset_type}: {e}")
+            val = getattr(client, attr)
+            if not callable(val):
+                print(f"  {attr} = {val}")
+        except:
+            pass
+
+# Try to get open orders to verify API works
+print("\n--- API Test ---")
+try:
+    orders = client.get_orders()
+    print(f"  Open orders: {len(orders) if isinstance(orders, list) else orders}")
 except Exception as e:
-    print(f"  Error: {e}")
+    print(f"  Orders: {e}")
 
 print("\nDone.")
