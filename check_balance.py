@@ -1,4 +1,4 @@
-"""Check Polymarket wallet balance and allowance."""
+"""Check Polymarket wallet balance — supports proxy wallet (email login)."""
 import os
 import sys
 
@@ -14,73 +14,63 @@ CLOB_HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
 
 pk = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+proxy_addr = os.environ.get("POLYMARKET_PROXY_ADDRESS", "")
+
 if not pk:
     print("ERROR: POLYMARKET_PRIVATE_KEY not set")
     sys.exit(1)
 
-print("Connecting to Polymarket CLOB...")
-client = ClobClient(host=CLOB_HOST, key=pk, chain_id=CHAIN_ID)
-creds = client.create_or_derive_api_creds()
-client.set_api_creds(creds)
-
-# Get wallet address
+# Get EOA address
 try:
     from eth_account import Account
     acct = Account.from_key(pk)
-    print(f"EOA address: {acct.address}")
+    print(f"EOA address:   {acct.address}")
 except Exception:
     pass
 
-# List all useful client methods
-print("\n--- Available balance/allowance methods ---")
-methods = [m for m in dir(client) if 'balance' in m.lower() or 'allow' in m.lower()
-           or 'approve' in m.lower() or 'deposit' in m.lower() or 'collateral' in m.lower()]
-for m in methods:
-    print(f"  {m}")
+if proxy_addr:
+    print(f"Proxy address: {proxy_addr}")
 
-# Try get_balance_allowance with different calling conventions
-print("\n--- Balance Check ---")
-try:
-    ba = client.get_balance_allowance()
-    print(f"  get_balance_allowance(): {ba}")
-except Exception as e:
-    print(f"  get_balance_allowance(): {e}")
+# Try both modes: direct EOA and proxy wallet
+for mode_name, sig_type, funder in [
+    ("Direct (EOA)", 0, None),
+    ("Proxy (email login)", 1, proxy_addr if proxy_addr else None),
+]:
+    print(f"\n--- Mode: {mode_name} ---")
 
-# Try with a token_id
-test_token = "16040015440196279900485035793550429453516625694844857319147506590755961451627"
-try:
-    ba = client.get_balance_allowance(test_token)
-    print(f"  get_balance_allowance(token): {ba}")
-except Exception as e:
-    print(f"  get_balance_allowance(token): {e}")
+    try:
+        kwargs = dict(host=CLOB_HOST, key=pk, chain_id=CHAIN_ID)
+        if sig_type > 0 and funder:
+            kwargs["signature_type"] = sig_type
+            kwargs["funder"] = funder
 
-# Check proxy wallet info
-print("\n--- Proxy Wallet ---")
-try:
-    proxy = client.create_or_derive_api_creds()
-    print(f"  API key: {proxy.api_key[:20]}...")
-    print(f"  API secret: {proxy.api_secret[:10]}...")
-    print(f"  API passphrase: {proxy.api_passphrase[:10]}...")
-except Exception as e:
-    print(f"  Error: {e}")
+        client = ClobClient(**kwargs)
+        creds = client.create_or_derive_api_creds()
+        client.set_api_creds(creds)
+        print(f"  API connected: OK")
 
-# Check if there's a proxy address method
-print("\n--- Other useful attributes ---")
-for attr in dir(client):
-    if any(x in attr.lower() for x in ['addr', 'proxy', 'wallet', 'signer', 'account']):
+        # Check balance
         try:
-            val = getattr(client, attr)
-            if not callable(val):
-                print(f"  {attr} = {val}")
-        except:
-            pass
+            ba = client.get_balance_allowance()
+            print(f"  Balance/Allowance: {ba}")
+        except Exception as e:
+            print(f"  Balance check: {e}")
 
-# Try to get open orders to verify API works
-print("\n--- API Test ---")
-try:
-    orders = client.get_orders()
-    print(f"  Open orders: {len(orders) if isinstance(orders, list) else orders}")
-except Exception as e:
-    print(f"  Orders: {e}")
+        # Try update_balance_allowance
+        try:
+            resp = client.update_balance_allowance()
+            print(f"  Update allowance: {resp}")
+        except Exception as e:
+            print(f"  Update allowance: {e}")
+
+        # Check balance again
+        try:
+            ba = client.get_balance_allowance()
+            print(f"  Balance after update: {ba}")
+        except Exception as e:
+            print(f"  Balance after: {e}")
+
+    except Exception as e:
+        print(f"  Error: {e}")
 
 print("\nDone.")
